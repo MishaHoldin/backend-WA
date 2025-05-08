@@ -7,7 +7,7 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { cors: { origin: 'https://wa-tg.netlify.app' } });
 
 const client = new Client({
   authStrategy: new LocalAuth(),
@@ -17,6 +17,7 @@ const client = new Client({
 client.on('qr', async (qr) => {
   const qrImage = await qrcode.toDataURL(qr);
   io.emit('qr', qrImage);
+  console.log(`qr is ready`)
 });
 
 client.on('ready', async () => {
