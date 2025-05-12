@@ -8,7 +8,13 @@ const allCities = require('all-the-cities');
 const Fuse = require('fuse.js');
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: 'https://wa-tg.netlify.app' } });
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
 const cities = allCities.map(city => ({ name: city.name }));
 const cityFuse = new Fuse(cities, {
   keys: ['name'],
