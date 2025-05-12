@@ -107,31 +107,31 @@ io.on('connection', (socket) => {
   socket.on('get-relevant-messages', async ({ chatIds, filters }) => {
     const { keywords, city, budgetMin, budgetMax } = filters;
     console.log('[🔍] FILTER REQUEST:', chatIds, filters);
-
     const result = [];
 
     for (const chatId of chatIds) {
       try {
         const chat = await client.getChatById(chatId);
-        const messages = await chat.fetchMessages({ limit: 250 });
-
+        const messages = await chat.fetchMessages({ limit: 50 });
         console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
 
         messages.forEach(msg => {
-          const text = msg.body?.toLowerCase() || ''
+          const text = msg.body?.toLowerCase() || '';
 
+          // Перевірка ключових слів
           const hasKeyword = keywords
-          .toLowerCase()
-          .split(',')
-          .some(k => text.includes(k.trim()))
+            .toLowerCase()
+            .split(',')
+            .some(k => text.includes(k.trim()));
 
+          // Перевірка на місто
+          const hasCity = !city || containsCity(text, city);
 
-          const hasCity = !city || text.includes(city.toLowerCase());
-
-          const matchNumbers = text.match(/\d+/g)?.map(Number) || [];
-          const hasBudget = matchNumbers.some(n =>
-            (!budgetMin || n >= budgetMin) &&
-            (!budgetMax || n <= budgetMax)
+          // Бюджет
+          const numbers = extractAllNumbers(text);
+          const hasBudget = numbers.some(n =>
+            (budgetMin === undefined || n >= budgetMin) &&
+            (budgetMax === undefined || n <= budgetMax)
           );
 
           if (hasKeyword && hasCity && hasBudget) {
@@ -145,12 +145,14 @@ io.on('connection', (socket) => {
               avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : ''
             });
           }
+
+          // Debug
           console.log('[📨] Message:', msg.body);
           console.log('[🔎] Contains keyword:', hasKeyword);
           console.log('[🔎] Contains city:', hasCity);
           console.log('[🔎] Has budget:', hasBudget);
-
         });
+
       } catch (e) {
         console.error(`[❌] Failed to fetch ${chatId}:`, e.message);
       }
@@ -159,6 +161,7 @@ io.on('connection', (socket) => {
     console.log(`[📤] Found ${result.length} relevant messages`);
     socket.emit('relevant-messages', result);
   });
+
   
   socket.on('quick-reply', ({ chatId, text }) => {
     client.sendMessage(chatId, text);
