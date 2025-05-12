@@ -4,11 +4,57 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const http = require('http');
 const { Server } = require('socket.io');
-
+const allCities = require('all-the-cities');
+const Fuse = require('fuse.js');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: 'https://wa-tg.netlify.app' } });
+const cities = allCities.map(city => ({ name: city.name }));
+const cityFuse = new Fuse(cities, {
+  keys: ['name'],
+  threshold: 0.3,
+  includeScore: true
+});
 
+
+function decodeEmojiNumberSequence(text) {
+  const emojiToDigit = {
+    '0️⃣': '0', '1️⃣': '1', '2️⃣': '2', '3️⃣': '3', '4️⃣': '4',
+    '5️⃣': '5', '6️⃣': '6', '7️⃣': '7', '8️⃣': '8', '9️⃣': '9'
+  };
+
+  return (text.match(/([0-9]️⃣)+/g) || []).map(seq => {
+    return [...seq.match(/([0-9]️⃣)/g)].map(e => emojiToDigit[e]).join('');
+  }).map(Number);
+}
+
+function extractAllNumbers(text) {
+  const standardNums = text.match(/\d+/g)?.map(Number) || [];
+  const emojiNums = decodeEmojiNumberSequence(text);
+  return [...standardNums, ...emojiNums];
+}
+
+function extractBudgetRange(text) {
+  const nums = extractAllNumbers(text);
+  const rangeMatch = text.match(/(\d+)[\s\-–]{1,3}(\d+)/);
+  if (rangeMatch) {
+    return { min: Number(rangeMatch[1]), max: Number(rangeMatch[2]) };
+  }
+  if (nums.length === 1) return { min: nums[0], max: undefined };
+  if (nums.length >= 2) return { min: nums[0], max: nums[1] };
+  return {};
+}
+
+function containsCity(text, targetCity) {
+  const words = text.toLowerCase().split(/\s|[.,;!?]/);
+  for (const word of words) {
+    const result = cityFuse.search(word);
+    if (result.length > 0 && result[0].item.name.toLowerCase() === targetCity.toLowerCase()) {
+      return true;
+    }
+  }
+  return false;
+}
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: { headless: true }
@@ -61,53 +107,33 @@ io.on('connection', (socket) => {
   socket.on('get-relevant-messages', async ({ chatIds, filters }) => {
     const { keywords, city, budgetMin, budgetMax } = filters;
     console.log('[🔍] FILTER REQUEST:', chatIds, filters);
-  
     const result = [];
-  
-    // Підтримка різних написань міста
-    const cityVariants = ['київ', 'kyiv', 'kiev'];
-  
-    // Emoji до чисел
-    const emojiNumbersMap = {
-      '0️⃣': 0, '1️⃣': 1, '2️⃣': 2, '3️⃣': 3, '4️⃣': 4,
-      '5️⃣': 5, '6️⃣': 6, '7️⃣': 7, '8️⃣': 8, '9️⃣': 9, '🔟': 10
-    };
-  
-    function extractNumbers(text) {
-      const standardNums = text.match(/\d+/g)?.map(Number) || [];
-      const emojiNumRegex = /([0-9]️⃣|🔟)/g;
-      const emojiMatches = text.match(emojiNumRegex) || [];
-      const emojiNums = emojiMatches.map(e => emojiNumbersMap[e]).filter(n => n !== undefined);
-      return [...standardNums, ...emojiNums];
-    }
-  
+
     for (const chatId of chatIds) {
       try {
         const chat = await client.getChatById(chatId);
         const messages = await chat.fetchMessages({ limit: 50 });
-  
         console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
-  
+
         messages.forEach(msg => {
           const text = msg.body?.toLowerCase() || '';
-  
-          // Ключові слова
+
+          // Перевірка ключових слів
           const hasKeyword = keywords
             .toLowerCase()
             .split(',')
             .some(k => text.includes(k.trim()));
-  
-          // Перевірка міста
-          const hasCity = !city || cityVariants.some(c => text.includes(c));
-  
-          // Перевірка бюджету з урахуванням emoji
-          const matchNumbers = extractNumbers(text);
-          const hasBudget = matchNumbers.some(n =>
+
+          // Перевірка на місто
+          const hasCity = !city || containsCity(text, city);
+
+          // Бюджет
+          const numbers = extractAllNumbers(text);
+          const hasBudget = numbers.some(n =>
             (budgetMin === undefined || n >= budgetMin) &&
             (budgetMax === undefined || n <= budgetMax)
           );
-  
-          // Якщо всі умови виконані
+
           if (hasKeyword && hasCity && hasBudget) {
             result.push({
               id: msg.id._serialized,
@@ -119,18 +145,19 @@ io.on('connection', (socket) => {
               avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : ''
             });
           }
-  
+
           // Debug
           console.log('[📨] Message:', msg.body);
           console.log('[🔎] Contains keyword:', hasKeyword);
           console.log('[🔎] Contains city:', hasCity);
           console.log('[🔎] Has budget:', hasBudget);
         });
+
       } catch (e) {
         console.error(`[❌] Failed to fetch ${chatId}:`, e.message);
       }
     }
-  
+
     console.log(`[📤] Found ${result.length} relevant messages`);
     socket.emit('relevant-messages', result);
   });
