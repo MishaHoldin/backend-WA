@@ -108,56 +108,58 @@ io.on('connection', (socket) => {
     const { keywords, city, budgetMin, budgetMax } = filters;
     console.log('[🔍] FILTER REQUEST:', chatIds, filters);
     const result = [];
-
-    for (const chatId of chatIds) {
+  
+    const allChats = await client.getChats();
+    const validChats = allChats.filter(c => chatIds.includes(c.id._serialized));
+  
+    for (const chat of validChats) {
       try {
-        const chat = await client.getChatById(chatId);
         const messages = await chat.fetchMessages({ limit: 50 });
-        console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
-
+        console.log(`[💬] Chat ${chat.id._serialized} → ${messages.length} messages`);
+  
         messages.forEach(msg => {
           const text = msg.body?.toLowerCase() || '';
-
-          // Перевірка ключових слів
+  
+          // Ключевые слова
           const hasKeyword = keywords
             .toLowerCase()
             .split(',')
             .some(k => text.includes(k.trim()));
-
-          // Перевірка на місто
+  
+          // Город
           const hasCity = !city || containsCity(text, city);
-
+  
           // Бюджет
           const numbers = extractAllNumbers(text);
           const hasBudget = numbers.some(n =>
             (budgetMin === undefined || n >= budgetMin) &&
             (budgetMax === undefined || n <= budgetMax)
           );
-
+  
           if (hasKeyword && hasCity && hasBudget) {
             result.push({
               id: msg.id._serialized,
-              chatId,
+              chatId: chat.id._serialized,
               body: msg.body,
               fromMe: msg.fromMe,
               timestamp: msg.timestamp,
-              senderName: msg._data?.notifyName || chat.name || chatId,
-              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : ''
+              senderName: msg._data?.notifyName || chat.name || chat.id.user,
+              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : ''
             });
           }
-
+  
           // Debug
           console.log('[📨] Message:', msg.body);
           console.log('[🔎] Contains keyword:', hasKeyword);
           console.log('[🔎] Contains city:', hasCity);
           console.log('[🔎] Has budget:', hasBudget);
         });
-
+  
       } catch (e) {
-        console.error(`[❌] Failed to fetch ${chatId}:`, e.message);
+        console.error(`[❌] Failed to process ${chat.id._serialized}:`, e.message);
       }
     }
-
+  
     console.log(`[📤] Found ${result.length} relevant messages`);
     socket.emit('relevant-messages', result);
   });
