@@ -236,12 +236,29 @@ io.on('connection', (socket) => {
   });
   socket.on('logout', async () => {
     try {
-      await client.logout()
-      console.log('🛑 Logged out from WhatsApp')
+      // 1. Завершаем сессию
+      await client.logout();
+      console.log('🛑 Logged out from WhatsApp');
+  
+      // 2. Удаляем всю папку сессии
+      const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session-dashboard');
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        console.log('🧹 Session cache cleared:', sessionPath);
+      }
+  
+      // 3. Полностью уничтожаем текущий клиент
+      await client.destroy();
+      console.log('🧨 Client destroyed');
+  
+      // 4. Переинициализируем — покажет QR повторно
+      client.initialize();
+      console.log('🔁 Client reinitialized');
+  
     } catch (err) {
-      console.error('Logout error:', err)
+      console.error('Logout error:', err);
     }
-  })
+  });
 });
 
 client.initialize();
