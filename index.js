@@ -14,7 +14,7 @@ const io = new Server(server, {
     methods: ['GET', 'POST']
   }
 });
-
+let isClientReady = false;
 const cities = allCities.map(city => ({ name: city.name }));
 const cityFuse = new Fuse(cities, {
   keys: ['name'],
@@ -62,7 +62,7 @@ function containsCity(text, targetCity) {
   return false;
 }
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({ clientId: 'dashboard' }),
   puppeteer: {
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -80,7 +80,7 @@ client.on('qr', async (qr) => {
 client.on('ready', async () => {
   console.log('Client is ready!');
   io.emit('ready');
-
+  isClientReady = true;
   const chats = await client.getChats();
   const simplifiedChats = chats.map(chat => ({
     id: chat.id._serialized,
@@ -118,32 +118,43 @@ io.on('connection', (socket) => {
     const { keywords, city, budgetMin, budgetMax } = filters;
     console.log('[🔍] FILTER REQUEST:', chatIds, filters);
     const result = [];
-
+  
     for (const chatId of chatIds) {
       try {
         const chat = await client.getChatById(chatId);
-        const messages = await chat.fetchMessages({ limit: 50 });
-        console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
-
-        messages.forEach(msg => {
+        let allMessages = [];
+        let lastMessage;
+  
+        // Загрузка максимум 300 сообщений по 50
+        while (allMessages.length < 300) {
+          const options = { limit: 50 };
+          if (lastMessage) options.before = lastMessage.id;
+  
+          const messages = await chat.fetchMessages(options);
+          if (messages.length === 0) break;
+  
+          allMessages.push(...messages);
+          lastMessage = messages[messages.length - 1];
+        }
+  
+        console.log(`[💬] Chat ${chatId} → ${allMessages.length} messages total`);
+  
+        allMessages.forEach(msg => {
           const text = msg.body?.toLowerCase() || '';
-
-          // Перевірка ключових слів
+  
           const hasKeyword = keywords
             .toLowerCase()
             .split(',')
             .some(k => text.includes(k.trim()));
-
-          // Перевірка на місто
+  
           const hasCity = !city || containsCity(text, city);
-
-          // Бюджет
+  
           const numbers = extractAllNumbers(text);
           const hasBudget = numbers.some(n =>
             (budgetMin === undefined || n >= budgetMin) &&
             (budgetMax === undefined || n <= budgetMax)
           );
-
+  
           if (hasKeyword && hasCity && hasBudget) {
             result.push({
               id: msg.id._serialized,
@@ -152,31 +163,31 @@ io.on('connection', (socket) => {
               fromMe: msg.fromMe,
               timestamp: msg.timestamp,
               senderName: msg._data?.notifyName || chat.name || chatId,
-              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : ''
+              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
+              isNew: !msg.fromMe,
+              hasReply: !!msg.hasQuotedMsg
             });
+            
           }
-
-          // Debug
-          console.log('[📨] Message:', msg.body);
-          console.log('[🔎] Contains keyword:', hasKeyword);
-          console.log('[🔎] Contains city:', hasCity);
-          console.log('[🔎] Has budget:', hasBudget);
         });
-
       } catch (e) {
         console.error(`[❌] Failed to fetch ${chatId}:`, e.message);
       }
     }
-
+  
+    // Сортируем по дате (новые сверху)
+    result.sort((a, b) => b.timestamp - a.timestamp);
+  
     console.log(`[📤] Found ${result.length} relevant messages`);
     socket.emit('relevant-messages', result);
   });
+  
 
   
   socket.on('quick-reply', ({ chatId, text }) => {
     client.sendMessage(chatId, text);
   });
-  if (client.info?.wid) {
+  if (isClientReady) {
     client.getChats().then(chats => {
       const simplifiedChats = chats.map(chat => ({
         id: chat.id._serialized,
@@ -185,7 +196,12 @@ io.on('connection', (socket) => {
         lastMessage: chat.lastMessage?.body || ''
       }))
       socket.emit('chats', simplifiedChats)
-    })
+    }).catch(e => {
+      console.error('🚨 Failed to get chats:', e.message);
+    });
+  } else {
+    console.log('⚠️ Client not ready yet. Skipping getChats.');
+    socket.emit('not-ready');
   }
   socket.on('load-chat', async (chatId) => {
     try {
