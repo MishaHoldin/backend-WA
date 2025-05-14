@@ -117,70 +117,74 @@ io.on('connection', (socket) => {
   socket.on('get-relevant-messages', async ({ chatIds, filters }) => {
     const { keywords, city, budgetMin, budgetMax } = filters;
     console.log('[🔍] FILTER REQUEST:', chatIds, filters);
+  
     const result = [];
   
     for (const chatId of chatIds) {
+      let chat;
       try {
-        const chat = await client.getChatById(chatId);
-        let allMessages = [];
-        let lastMessage;
+        chat = await client.getChatById(chatId);
+        if (!chat || !chat.id || !chat.id._serialized) {
+          console.warn(`[⚠️] Chat ${chatId} is undefined or has invalid structure`);
+          continue;
+        }
+      } catch (e) {
+        console.error(`[❌] getChatById failed for ${chatId}:`, e.message);
+        continue;
+      }
   
-        // Загрузка максимум 300 сообщений по 50
-        while (allMessages.length < 300) {
-          const options = { limit: 50 };
-          if (lastMessage) options.before = lastMessage.id;
+      let messages = [];
+      try {
+        messages = await chat.fetchMessages({ limit: 50 });
+        console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
+      } catch (e) {
+        console.error(`[❌] fetchMessages failed for ${chatId}:`, e.message);
+        continue;
+      }
   
-          const messages = await chat.fetchMessages(options);
-          if (messages.length === 0) break;
+      for (const msg of messages) {
+        const text = (msg.body || '').toLowerCase();
   
-          allMessages.push(...messages);
-          lastMessage = messages[messages.length - 1];
+        const hasKeyword = keywords
+          .toLowerCase()
+          .split(',')
+          .some(k => k.trim() && text.includes(k.trim()));
+  
+        const hasCity = !city || containsCity(text, city);
+  
+        const numbers = extractAllNumbers(text);
+        const hasBudget = numbers.some(n =>
+          (budgetMin === undefined || n >= budgetMin) &&
+          (budgetMax === undefined || n <= budgetMax)
+        );
+  
+        if (hasKeyword && hasCity && hasBudget) {
+          result.push({
+            id: msg.id?._serialized || '',
+            chatId,
+            body: msg.body || '',
+            fromMe: msg.fromMe,
+            timestamp: msg.timestamp,
+            senderName: msg._data?.notifyName || msg.author || chat.name || chatId,
+            avatar: chat.id?.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
+            isNew: !msg.fromMe,
+            hasReply: !!msg.hasQuotedMsg
+          });
         }
   
-        console.log(`[💬] Chat ${chatId} → ${allMessages.length} messages total`);
-  
-        allMessages.forEach(msg => {
-          const text = msg.body?.toLowerCase() || '';
-  
-          const hasKeyword = keywords
-            .toLowerCase()
-            .split(',')
-            .some(k => text.includes(k.trim()));
-  
-          const hasCity = !city || containsCity(text, city);
-  
-          const numbers = extractAllNumbers(text);
-          const hasBudget = numbers.some(n =>
-            (budgetMin === undefined || n >= budgetMin) &&
-            (budgetMax === undefined || n <= budgetMax)
-          );
-  
-          if (hasKeyword && hasCity && hasBudget) {
-            result.push({
-              id: msg.id._serialized,
-              chatId,
-              body: msg.body,
-              fromMe: msg.fromMe,
-              timestamp: msg.timestamp,
-              senderName: msg._data?.notifyName || chat.name || chatId,
-              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
-              isNew: !msg.fromMe,
-              hasReply: !!msg.hasQuotedMsg
-            });
-            
-          }
-        });
-      } catch (e) {
-        console.error(`[❌] Failed to fetch ${chatId}:`, e.message);
+        // 🔍 Debug logs
+        console.log('[📨] Message:', msg.body);
+        console.log('[🔎] Contains keyword:', hasKeyword);
+        console.log('[🔎] Contains city:', hasCity);
+        console.log('[🔎] Has budget:', hasBudget);
       }
     }
   
-    // Сортируем по дате (новые сверху)
     result.sort((a, b) => b.timestamp - a.timestamp);
-  
     console.log(`[📤] Found ${result.length} relevant messages`);
     socket.emit('relevant-messages', result);
   });
+  
   
 
   
