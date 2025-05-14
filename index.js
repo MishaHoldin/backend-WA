@@ -154,32 +154,40 @@ io.on('connection', (socket) => {
       }
   
       for (const msg of messages) {
-        const text = (msg.body || '').toLowerCase();
-        if (!text || typeof text !== 'string') continue;
-  
-        // 🚀 Новый Fuse по словам (а не по всей строке)
-        const normalizedText = (msg.body || '')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^\p{L}\p{N}\s]/gu, '')
-        .toLowerCase();
+        const rawText = msg.body || '';
+        if (!rawText || typeof rawText !== 'string') continue;
       
-        const hasKeyword = keywordList.length === 0 || keywordList.some(keyword => normalizedText.includes(keyword));
+        const normalizedText = rawText
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^\p{L}\p{N}\s]/gu, '')
+          .toLowerCase();
       
-  
-        const hasCity = !city || cityFuse.search(text).length > 0;
-  
-        const numbers = extractAllNumbers(text);
+        // ✅ Поиск ключевых слов с помощью Fuse
+        const fuse = new Fuse([{ content: normalizedText }], {
+          keys: ['content'],
+          threshold: 0.5
+        });
+      
+        const hasKeyword = keywordList.length === 0 || keywordList.some(keyword =>
+          fuse.search(keyword.toLowerCase()).length > 0
+        );
+      
+        // ✅ Проверка города (гибкая: Kiev, Kyiv и т.д.)
+        const hasCity = !city || cityFuse.search(normalizedText).length > 0;
+      
+        // ✅ Поиск бюджета (интервалы и эмодзи)
+        const numbers = extractAllNumbers(rawText);
         const hasBudget = numbers.some(n =>
           (cleanBudgetMin === undefined || n >= cleanBudgetMin) &&
           (cleanBudgetMax === undefined || n <= cleanBudgetMax)
         );
-  
+      
         if (hasKeyword && hasCity && hasBudget) {
           result.push({
             id: msg.id?._serialized || '',
             chatId,
-            body: msg.body || '',
+            body: rawText,
             fromMe: msg.fromMe,
             timestamp: msg.timestamp,
             senderName: msg._data?.notifyName || msg.author || chat.name || chatId,
@@ -188,13 +196,14 @@ io.on('connection', (socket) => {
             hasReply: !!msg.hasQuotedMsg
           });
         }
-  
+      
         // 👀 DEBUG
-        console.log('[📨] Message:', msg.body);
+        console.log('[📨] Message:', rawText);
         console.log('[🔎] Contains keyword:', hasKeyword);
         console.log('[🔎] Contains city:', hasCity);
         console.log('[🔎] Has budget:', hasBudget);
       }
+      
     }
   
     result.sort((a, b) => b.timestamp - a.timestamp);
