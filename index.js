@@ -120,6 +120,22 @@ io.on('connection', (socket) => {
   
     const result = [];
   
+    const cleanBudgetMin = isNaN(Number(budgetMin)) ? undefined : Number(budgetMin);
+    const cleanBudgetMax = isNaN(Number(budgetMax)) ? undefined : Number(budgetMax);
+  
+    // Подготовим ключевые слова
+    const keywordList = keywords
+      .toLowerCase()
+      .split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0);
+  
+    // Подготовим поиск по городу
+    const cityFuse = new Fuse([{ name: city }], {
+      keys: ['name'],
+      threshold: 0.3
+    });
+  
     for (const chatId of chatIds) {
       let chat;
       try {
@@ -144,18 +160,27 @@ io.on('connection', (socket) => {
   
       for (const msg of messages) {
         const text = (msg.body || '').toLowerCase();
+        if (!text || typeof text !== 'string') continue;
   
-        const hasKeyword = keywords
-          .toLowerCase()
-          .split(',')
-          .some(k => k.trim() && text.includes(k.trim()));
+        const fuseText = new Fuse([text], {
+          threshold: 0.3,
+          includeScore: true
+        });
   
-        const hasCity = !city || containsCity(text, city);
+        // === Ключевые слова (через Fuse) ===
+        const hasKeyword =
+          keywordList.length === 0 ||
+          keywordList.some(keyword => fuseText.search(keyword).length > 0);
   
+        // === Город (через Fuse) ===
+        const hasCity =
+          !city || cityFuse.search(text).length > 0;
+  
+        // === Бюджет: из строки достаём все числа и сравниваем ===
         const numbers = extractAllNumbers(text);
         const hasBudget = numbers.some(n =>
-          (budgetMin === undefined || n >= budgetMin) &&
-          (budgetMax === undefined || n <= budgetMax)
+          (cleanBudgetMin === undefined || n >= cleanBudgetMin) &&
+          (cleanBudgetMax === undefined || n <= cleanBudgetMax)
         );
   
         if (hasKeyword && hasCity && hasBudget) {
@@ -172,7 +197,7 @@ io.on('connection', (socket) => {
           });
         }
   
-        // 🔍 Debug logs
+        // 🔍 Debug
         console.log('[📨] Message:', msg.body);
         console.log('[🔎] Contains keyword:', hasKeyword);
         console.log('[🔎] Contains city:', hasCity);
