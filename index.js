@@ -120,28 +120,22 @@ io.on('connection', (socket) => {
   
     const result = [];
   
+    // === Очистка и подготовка фильтров ===
     const cleanBudgetMin = isNaN(Number(budgetMin)) ? undefined : Number(budgetMin);
     const cleanBudgetMax = isNaN(Number(budgetMax)) ? undefined : Number(budgetMax);
   
-    // Подготовим ключевые слова
     const keywordList = keywords
       .toLowerCase()
       .split(',')
       .map(k => k.trim())
-      .filter(k => k.length > 0);
-  
-    // Подготовим поиск по городу
-    const cityFuse = new Fuse([{ name: city }], {
-      keys: ['name'],
-      threshold: 0.3
-    });
+      .filter(Boolean);
   
     for (const chatId of chatIds) {
       let chat;
       try {
         chat = await client.getChatById(chatId);
         if (!chat || !chat.id || !chat.id._serialized) {
-          console.warn(`[⚠️] Chat ${chatId} is undefined or has invalid structure`);
+          console.warn(`[⚠️] Chat ${chatId} is invalid`);
           continue;
         }
       } catch (e) {
@@ -162,26 +156,22 @@ io.on('connection', (socket) => {
         const text = (msg.body || '').toLowerCase();
         if (!text || typeof text !== 'string') continue;
   
-        const fuseText = new Fuse([text], {
-          threshold: 0.4,
-          minMatchCharLength: 2,
-          includeScore: true
-        });
-  
-        // === Ключевые слова (через Fuse) ===
+        // === Проверка ключевых слов (через Fuse или includes) ===
         const hasKeyword =
-          keywordList.length === 0 || keywordList.some(keyword => {
-            if (keyword.length <= 3) {
-              return text.includes(keyword); // fallback вручную
-            }
-            return fuseText.search(keyword).length > 0;
+          keywordList.length === 0 ||
+          keywordList.some(keyword => {
+            if (keyword.length <= 3) return text.includes(keyword);
+            const fuse = new Fuse([text], {
+              threshold: 0.3,
+              minMatchCharLength: 2,
+            });
+            return fuse.search(keyword).length > 0;
           });
   
-        // === Город (через Fuse) ===
-        const hasCity =
-          !city || cityFuse.search(text).length > 0;
+        // === Проверка наличия города (по всем словам текста) ===
+        const hasCity = !city || containsCity(text, city);
   
-        // === Бюджет: из строки достаём все числа и сравниваем ===
+        // === Проверка бюджета ===
         const numbers = extractAllNumbers(text);
         const hasBudget = numbers.some(n =>
           (cleanBudgetMin === undefined || n >= cleanBudgetMin) &&
@@ -202,7 +192,7 @@ io.on('connection', (socket) => {
           });
         }
   
-        // 🔍 Debug
+        // === Debug лог ===
         console.log('[📨] Message:', msg.body);
         console.log('[🔎] Contains keyword:', hasKeyword);
         console.log('[🔎] Contains city:', hasCity);
@@ -215,8 +205,6 @@ io.on('connection', (socket) => {
     socket.emit('relevant-messages', result);
   });
   
-  
-
   
   socket.on('quick-reply', ({ chatId, text }) => {
     client.sendMessage(chatId, text);
