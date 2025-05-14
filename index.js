@@ -114,25 +114,10 @@ client.on('message', (msg) => {
 
 // Навантаження історії діалогу
 io.on('connection', (socket) => {
-  socket.on('get-relevant-messages', async ({ chatIds, filters }) => {
-    const { keywords, city, budgetMin, budgetMax } = filters;
-    console.log('[🔍] FILTER REQUEST:', chatIds, filters);
+  socket.on('get-relevant-messages', async ({ chatIds }) => {
+    console.log('[🔄] RAW REQUEST (без фильтров):', chatIds);
   
     const result = [];
-  
-    const cleanBudgetMin = isNaN(Number(budgetMin)) ? undefined : Number(budgetMin);
-    const cleanBudgetMax = isNaN(Number(budgetMax)) ? undefined : Number(budgetMax);
-  
-    const keywordList = keywords
-      .toLowerCase()
-      .split(',')
-      .map(k => k.trim())
-      .filter(k => k.length > 0);
-  
-    const cityFuse = new Fuse([{ name: city }], {
-      keys: ['name'],
-      threshold: 0.3
-    });
   
     for (const chatId of chatIds) {
       let chat;
@@ -156,57 +141,25 @@ io.on('connection', (socket) => {
       for (const msg of messages) {
         const rawText = msg.body || '';
         if (!rawText || typeof rawText !== 'string') continue;
-      
-        const normalizedText = rawText
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .replace(/[^\p{L}\p{N}\s]/gu, '')
-          .toLowerCase();
-      
-        // ✅ Поиск ключевых слов с помощью Fuse
-        const fuse = new Fuse([{ content: normalizedText }], {
-          keys: ['content'],
-          threshold: 0.7,
-          useExtendedSearch: true,
+  
+        result.push({
+          id: msg.id?._serialized || '',
+          chatId,
+          body: rawText,
+          fromMe: msg.fromMe,
+          timestamp: msg.timestamp,
+          senderName: msg._data?.notifyName || msg.author || chat.name || chatId,
+          avatar: chat.id?.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
+          isNew: !msg.fromMe,
+          hasReply: !!msg.hasQuotedMsg
         });
-      
-        const hasKeyword = keywordList.length === 0 || keywordList.some(keyword =>
-          fuse.search(keyword.toLowerCase()).length > 0
-        );
-      
-        // ✅ Проверка города (гибкая: Kiev, Kyiv и т.д.)
-        const hasCity = !city || cityFuse.search(normalizedText).length > 0;
-      
-        // ✅ Поиск бюджета (интервалы и эмодзи)
-        const numbers = extractAllNumbers(rawText);
-        const hasBudget = numbers.some(n =>
-          (cleanBudgetMin === undefined || n >= cleanBudgetMin) &&
-          (cleanBudgetMax === undefined || n <= cleanBudgetMax)
-        );
-      
-        if (hasKeyword && hasCity && hasBudget) {
-          result.push({
-            id: msg.id?._serialized || '',
-            chatId,
-            body: rawText,
-            fromMe: msg.fromMe,
-            timestamp: msg.timestamp,
-            senderName: msg._data?.notifyName || msg.author || chat.name || chatId,
-            avatar: chat.id?.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
-            isNew: !msg.fromMe,
-            hasReply: !!msg.hasQuotedMsg
-          });
-        }
       }
-      
     }
   
     result.sort((a, b) => b.timestamp - a.timestamp);
-    console.log(`[📤] Found ${result.length} relevant messages`);
+    console.log(`[📤] Sending ${result.length} messages (без фильтров)`);
     socket.emit('relevant-messages', result);
   });
-  
-  
   
   socket.on('quick-reply', ({ chatId, text }) => {
     client.sendMessage(chatId, text);
