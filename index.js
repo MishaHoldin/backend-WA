@@ -151,7 +151,7 @@ io.on('connection', (socket) => {
   
       let messages = [];
       try {
-        messages = await chat.fetchMessages({ limit: 50 });
+        messages = await chat.fetchMessages({ limit: 350 });
         console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
       } catch (e) {
         console.error(`[❌] fetchMessages failed for ${chatId}:`, e.message);
@@ -163,14 +163,19 @@ io.on('connection', (socket) => {
         if (!text || typeof text !== 'string') continue;
   
         const fuseText = new Fuse([text], {
-          threshold: 0.3,
+          threshold: 0.4,
+          minMatchCharLength: 2,
           includeScore: true
         });
   
         // === Ключевые слова (через Fuse) ===
         const hasKeyword =
-          keywordList.length === 0 ||
-          keywordList.some(keyword => fuseText.search(keyword).length > 0);
+          keywordList.length === 0 || keywordList.some(keyword => {
+            if (keyword.length <= 3) {
+              return text.includes(keyword); // fallback вручную
+            }
+            return fuseText.search(keyword).length > 0;
+          });
   
         // === Город (через Fuse) ===
         const hasCity =
@@ -235,7 +240,7 @@ io.on('connection', (socket) => {
   socket.on('load-chat', async (chatId) => {
     try {
       const chat = await client.getChatById(chatId);
-      const messages = await chat.fetchMessages({ limit: 50 });
+      const messages = await chat.fetchMessages({ limit: 350 });
 
       const formatted = messages.map((msg) => ({
         id: msg.id._serialized,
