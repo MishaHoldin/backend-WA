@@ -166,7 +166,8 @@ io.on('connection', (socket) => {
         // ✅ Поиск ключевых слов с помощью Fuse
         const fuse = new Fuse([{ content: normalizedText }], {
           keys: ['content'],
-          threshold: 0.5
+          threshold: 0.7,
+          useExtendedSearch: true,
         });
       
         const hasKeyword = keywordList.length === 0 || keywordList.some(keyword =>
@@ -196,12 +197,6 @@ io.on('connection', (socket) => {
             hasReply: !!msg.hasQuotedMsg
           });
         }
-      
-        // 👀 DEBUG
-        console.log('[📨] Message:', rawText);
-        console.log('[🔎] Contains keyword:', hasKeyword);
-        console.log('[🔎] Contains city:', hasCity);
-        console.log('[🔎] Has budget:', hasBudget);
       }
       
     }
