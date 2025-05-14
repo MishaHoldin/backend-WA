@@ -158,22 +158,14 @@ io.on('connection', (socket) => {
         if (!text || typeof text !== 'string') continue;
   
         // 🚀 Новый Fuse по словам (а не по всей строке)
-        const normalizedText = text
-        .normalize('NFD')                // убираем акценты и подобное
-        .replace(/[\u0300-\u036f]/g, '') // чистим остатки
-        .replace(/[^\p{L}\p{N}]/gu, ' ') // убираем все не-буквы/цифры
+        const normalizedText = (msg.body || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\p{L}\p{N}\s]/gu, '')
         .toLowerCase();
       
-      const hasKeyword =
-          keywordList.length === 0 ||
-          keywordList.some(rawKeyword => {
-            const keyword = rawKeyword
-              .normalize('NFD')
-              .replace(/[\u0300-\u036f]/g, '')
-              .toLowerCase();
-        
-            return normalizedText.includes(keyword);
-          });
+        const hasKeyword = keywordList.length === 0 || keywordList.some(keyword => normalizedText.includes(keyword));
+      
   
         const hasCity = !city || cityFuse.search(text).length > 0;
   
