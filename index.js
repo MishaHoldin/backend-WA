@@ -131,7 +131,7 @@ io.on('connection', (socket) => {
   
       let messages = [];
       try {
-        messages = await chat.fetchMessages({ limit: 350 });
+        messages = await chat.fetchMessages({ limit: 250 });
         console.log(`[💬] Chat ${chatId} → ${messages.length} messages`);
       } catch (e) {
         console.error(`[❌] fetchMessages failed for ${chatId}:`, e.message);
@@ -183,7 +183,7 @@ io.on('connection', (socket) => {
   socket.on('load-chat', async (chatId) => {
     try {
       const chat = await client.getChatById(chatId);
-      const messages = await chat.fetchMessages({ limit: 50 });
+      const messages = await chat.fetchMessages({ limit: 250 });
 
       const formatted = messages.map((msg) => ({
         id: msg.id._serialized,
