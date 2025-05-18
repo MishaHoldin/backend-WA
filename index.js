@@ -6,6 +6,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const allCities = require('all-the-cities');
 const Fuse = require('fuse.js');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -21,6 +23,25 @@ const cityFuse = new Fuse(cities, {
   threshold: 0.3,
   includeScore: true
 });
+const REPLIED_PATH = path.join(__dirname, 'repliedMessages.json');
+
+function getRepliedIds() {
+  if (!fs.existsSync(REPLIED_PATH)) return [];
+  try {
+    return JSON.parse(fs.readFileSync(REPLIED_PATH, 'utf-8'));
+  } catch (err) {
+    console.error('Error reading repliedMessages.json:', err);
+    return [];
+  }
+}
+
+function addRepliedId(messageId) {
+  const ids = getRepliedIds();
+  if (!ids.includes(messageId)) {
+    ids.push(messageId);
+    fs.writeFileSync(REPLIED_PATH, JSON.stringify(ids, null, 2));
+  }
+}
 
 
 function decodeEmojiNumberSequence(text) {
@@ -138,10 +159,11 @@ io.on('connection', (socket) => {
         continue;
       }
   
+      const repliedIds = getRepliedIds();
       for (const msg of messages) {
         const rawText = msg.body || '';
         if (!rawText || typeof rawText !== 'string') continue;
-  
+        if (repliedIds.includes(msg.id._serialized)) continue;
         result.push({
           id: msg.id?._serialized || '',
           chatId,
@@ -161,9 +183,13 @@ io.on('connection', (socket) => {
     socket.emit('relevant-messages', result);
   });
   
-  socket.on('quick-reply', ({ chatId, text }) => {
-    client.sendMessage(chatId, text);
+  socket.on('quick-reply', ({ chatId, text, repliedToId }) => {
+    client.sendMessage(chatId, text).then(() => {
+      if (repliedToId) addRepliedId(repliedToId);
+    });
   });
+  
+  
   if (isClientReady) {
     client.getChats().then(chats => {
       const simplifiedChats = chats.map(chat => ({
