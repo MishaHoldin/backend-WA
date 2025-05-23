@@ -127,7 +127,9 @@ client.on('message', (msg) => {
     body: msg.body,
     fromMe: msg.fromMe,
     timestamp: msg.timestamp,
-    notifyName: msg._data?.notifyName || ''
+    notifyName: msg._data?.notifyName || '',
+    author: msg.author || msg.from
+
   });
 
   io.emit('message', msg);
@@ -173,7 +175,8 @@ io.on('connection', (socket) => {
           senderName: msg._data?.notifyName || msg.author || chat.name || chatId,
           avatar: chat.id?.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
           isNew: !msg.fromMe,
-          hasReply: !!msg.hasQuotedMsg
+          hasReply: !!msg.hasQuotedMsg,
+          author: msg.author || msg.from
         });
       }
     }
@@ -183,11 +186,24 @@ io.on('connection', (socket) => {
     socket.emit('relevant-messages', result);
   });
   
-  socket.on('quick-reply', ({ chatId, text, repliedToId }) => {
-    client.sendMessage(chatId, text).then(() => {
-      if (repliedToId) addRepliedId(repliedToId);
-    });
+  socket.on('quick-reply', async ({ chatId, text, repliedToId, author }) => {
+    try {
+      console.log('[Backend] Received quick-reply request:', { chatId, text, repliedToId, author });
+  
+      if (!author) {
+        console.error('[Backend] Cannot send reply — author is missing');
+        return;
+      }
+  
+      await client.sendMessage(author, text);
+      addRepliedId(repliedToId);
+      console.log('[Backend] Message sent successfully to:', author);
+    } catch (error) {
+      console.error('[Backend] Error sending personal message:', error);
+    }
   });
+  
+  
   
   
   if (isClientReady) {
@@ -226,16 +242,20 @@ io.on('connection', (socket) => {
   });
 
   client.on('message', (msg) => {
-    io.emit('new-message', {
-      chatId: msg.from,
-      message: {
-        id: msg.id._serialized,
-        body: msg.body,
-        fromMe: msg.fromMe,
-        timestamp: msg.timestamp,
-        senderName: msg._data?.notifyName || msg.from
-      }
+    client.on('message', (msg) => {
+      io.emit('new-message', {
+        chatId: msg.from,
+        message: {
+          id: msg.id._serialized,
+          body: msg.body,
+          fromMe: msg.fromMe,
+          timestamp: msg.timestamp,
+          senderName: msg._data?.notifyName || msg.from,
+          author: msg.author || msg.from
+        }
+      });
     });
+    
   });
   socket.on('logout', async () => {
     try {
