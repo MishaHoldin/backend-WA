@@ -203,8 +203,74 @@ io.on('connection', (socket) => {
     }
   });
   
+  socket.on('get-replied-messages', async () => {
+  const repliedIds = getRepliedIds();
+  const allChats = await client.getChats();
+  const result = [];
+
+  for (const chat of allChats) {
+    const messages = await chat.fetchMessages({ limit: 250 });
+    for (const msg of messages) {
+      if (repliedIds.includes(msg.id._serialized)) {
+        result.push({
+          id: msg.id._serialized,
+          chatId: chat.id._serialized,
+          body: msg.body,
+          fromMe: msg.fromMe,
+          timestamp: msg.timestamp,
+          senderName: msg._data?.notifyName || msg.author || chat.name || chat.id.user,
+          avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+          author: msg.author || msg.from
+        });
+      }
+    }
+  }
+
+  result.sort((a, b) => b.timestamp - a.timestamp);
+  socket.emit('replied-messages', result);
+  });
+
+  socket.on('mark-as-replied', (messageId) => {
+    addRepliedId(messageId);
+    console.log(`Message ${messageId} marked as replied`);
+  });
+  socket.on("load-chat", async (chatId, authorId) => {
+    try {
+      console.log("📥 [load-chat] chatId:", chatId, "| authorId:", authorId);
   
+      const chat = await client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 1500 });
   
+      const filtered = messages
+        .filter((m) => {
+          const remote = m.id?.remote;
+          const passed = m.fromMe || remote === authorId;
+  
+          console.log(`[🧪 CHECK] msg.id: ${m.id._serialized}`);
+          console.log(`    → remote: ${remote}`);
+          console.log(`    → fromMe: ${m.fromMe}`);
+          console.log(`    → matches: ${passed}`);
+          console.log(`    → from: ${m.from}`);
+          console.log(`    → author: ${m.author}`);
+          console.log(`    → body: ${m.body?.slice(0, 50)}\n`);
+  
+          return passed;
+        })
+        .map((m) => ({
+          id: m.id._serialized,
+          body: m.body,
+          fromMe: m.fromMe,
+          timestamp: m.timestamp,
+          senderName: m._data?.notifyName || chat.name || chatId,
+          author: m.author || m.from
+        }));
+  
+      console.log(`✅ [RESULT] matched ${filtered.length} / ${messages.length} messages`);
+      socket.emit("chat-history", { chatId, messages: filtered });
+    } catch (err) {
+      console.error("❌ Error loading chat history:", err.message);
+    }
+  });
   
   if (isClientReady) {
     client.getChats().then(chats => {
@@ -222,24 +288,6 @@ io.on('connection', (socket) => {
     console.log('⚠️ Client not ready yet. Skipping getChats.');
     socket.emit('not-ready');
   }
-  socket.on('load-chat', async (chatId) => {
-    try {
-      const chat = await client.getChatById(chatId);
-      const messages = await chat.fetchMessages({ limit: 250 });
-
-      const formatted = messages.map((msg) => ({
-        id: msg.id._serialized,
-        body: msg.body,
-        fromMe: msg.fromMe,
-        timestamp: msg.timestamp,
-        senderName: msg._data?.notifyName || chat.name || chatId
-      }));
-
-      socket.emit('chat-history', { chatId, messages: formatted });
-    } catch (err) {
-      console.error('❌ Error loading chat history:', err);
-    }
-  });
 
   client.on('message', (msg) => {
     client.on('message', (msg) => {
