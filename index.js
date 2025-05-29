@@ -199,8 +199,14 @@ io.on('connection', (socket) => {
       // ⬇️ Puppeteer внутри функции
       const browser = await puppeteer.launch({
         headless: false,
+        executablePath: '/usr/bin/google-chrome',
         userDataDir: './.wpp-session',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--start-maximized'
+        ] 
       });
   
       const page = await browser.newPage();
