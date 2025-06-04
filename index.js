@@ -1,18 +1,18 @@
 // === backend/index.js ===
 const express = require('express');
-const { Client, NoAuth } = require('whatsapp-web.js');
+const { Client, NoAuth, LocalAuth  } = require('whatsapp-web.js');
+const { v4: uuidv4 } = require('uuid');
 const qrcode = require('qrcode');
 const http = require('http');
 const { Server } = require('socket.io');
-const allCities = require('all-the-cities');
-const Fuse = require('fuse.js');
 const fs = require('fs');
 const path = require('path');
 const app = express();
 const server = http.createServer(app);
-const { resolveLidToWid } = require('./resolveLid');
-const { getCusFromLid, saveLidMapping } = require('./lidMapper');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
+
 const io = new Server(server, {
   cors: {
     origin: '*',
@@ -20,13 +20,10 @@ const io = new Server(server, {
   }
 });
 let isClientReady = false;
-const cities = allCities.map(city => ({ name: city.name }));
-const cityFuse = new Fuse(cities, {
-  keys: ['name'],
-  threshold: 0.3,
-  includeScore: true
-});
 const REPLIED_PATH = path.join(__dirname, 'repliedMessages.json');
+const clients = {};
+const sessions = {};
+const chatHistories = {} // для історії
 
 function getRepliedIds() {
   if (!fs.existsSync(REPLIED_PATH)) return [];
@@ -47,98 +44,91 @@ function addRepliedId(messageId) {
 }
 
 
-function decodeEmojiNumberSequence(text) {
-  const emojiToDigit = {
-    '0️⃣': '0', '1️⃣': '1', '2️⃣': '2', '3️⃣': '3', '4️⃣': '4',
-    '5️⃣': '5', '6️⃣': '6', '7️⃣': '7', '8️⃣': '8', '9️⃣': '9'
-  };
-
-  return (text.match(/([0-9]️⃣)+/g) || []).map(seq => {
-    return [...seq.match(/([0-9]️⃣)/g)].map(e => emojiToDigit[e]).join('');
-  }).map(Number);
-}
-
-function extractAllNumbers(text) {
-  const standardNums = text.match(/\d+/g)?.map(Number) || [];
-  const emojiNums = decodeEmojiNumberSequence(text);
-  return [...standardNums, ...emojiNums];
-}
-
-function extractBudgetRange(text) {
-  const nums = extractAllNumbers(text);
-  const rangeMatch = text.match(/(\d+)[\s\-–]{1,3}(\d+)/);
-  if (rangeMatch) {
-    return { min: Number(rangeMatch[1]), max: Number(rangeMatch[2]) };
-  }
-  if (nums.length === 1) return { min: nums[0], max: undefined };
-  if (nums.length >= 2) return { min: nums[0], max: nums[1] };
-  return {};
-}
-
-function containsCity(text, targetCity) {
-  const words = text.toLowerCase().split(/\s|[.,;!?]/);
-  for (const word of words) {
-    const result = cityFuse.search(word);
-    if (result.length > 0 && result[0].item.name.toLowerCase() === targetCity.toLowerCase()) {
-      return true;
-    }
-  }
-  return false;
-}
-const client = new Client({
-  authStrategy: new NoAuth(),
-  puppeteer: {
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  }
-});
-
-
-client.on('qr', async (qr) => {
-  const qrImage = await qrcode.toDataURL(qr);
-  io.emit('qr', qrImage);
-});
-
-client.on('ready', async () => {
-  console.log('Client is ready!');
-  io.emit('ready');
-  isClientReady = true;
-  const chats = await client.getChats();
-  const simplifiedChats = chats.map(chat => ({
-    id: chat.id._serialized,
-    name: chat.name || chat.id.user || 'Unnamed Chat',
-    avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-    lastMessage: chat.lastMessage?.body || ''
-  }));
-
-
-  io.emit('chats', simplifiedChats);
-});
-
-const chatHistories = {} // для історії
-
-client.on('message', (msg) => {
-
-  // Зберігаємо історію повідомлень у RAM
-  const from = msg.from;
-  if (!chatHistories[from]) chatHistories[from] = [];
-  chatHistories[from].push({
-    id: msg.id,
-    body: msg.body,
-    fromMe: msg.fromMe,
-    timestamp: msg.timestamp,
-    notifyName: msg._data?.notifyName || '',
-    author: msg.id.participant || msg.author || msg.from,
-    participant : msg.participant
-  });
-
-  io.emit('message', msg);
-});
-
-// Навантаження історії діалогу
 io.on('connection', (socket) => {
+  socket.on('start-session', async () => {
+    const userId = uuidv4();
+    console.log(`[🔄] start-session запущен для socket.id = ${socket.id}`);
+    const client = new Client({
+      authStrategy: new LocalAuth({ clientId: userId }),
+      puppeteer: {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      }
+    });
+
+    clients[userId] = client;
+    sessions[socket.id] = userId;
+
+    client.initialize();
+    console.log(`[🚀] client.initialize вызван для ${userId}`);
+
+    client.on('qr', async (qr) => {
+      const qrImage = await qrcode.toDataURL(qr);
+      socket.emit('qr', { userId, qr: qrImage });
+      console.log(`[🧾] QR-код сгенерирован для ${userId}`);
+    });
+
+    
+    
+    client.on('ready', async () => {
+      console.log(`[✅] Клиент готов после восстановления ${userId}`);
+    
+      let chats;
+      try {
+        chats = await client.getChats();
+      } catch (err) {
+        console.error(`❌ Ошибка при получении чатов: ${err.message}`);
+        return;
+      }
+    
+      const simplified = chats
+        .filter(chat => chat?.id?._serialized)
+        .map(chat => ({
+          id: chat.id._serialized,
+          name: chat.name || chat.id.user || 'Unnamed Chat',
+          avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+          lastMessage: chat.lastMessage?.body || ''
+        }));
+    
+      socket.emit('ready', { userId });
+      socket.emit('chats', simplified);
+    });
+    
+
+    client.on('message', (msg) => {
+      const from = msg.from;
+      if (!chatHistories[from]) chatHistories[from] = [];
+      chatHistories[from].push({
+        id: msg.id,
+        body: msg.body,
+        fromMe: msg.fromMe,
+        timestamp: msg.timestamp,
+        notifyName: msg._data?.notifyName || '',
+        author: msg.id.participant || msg.author || msg.from
+      });
+      socket.emit('message', msg);
+    });
+    socket.on('logout', async ({ userId }) => {
+      const client = clients[userId];
+      if (client) {
+        try {
+          await client.logout();
+          if (client.pupBrowser) {
+            await client.destroy();
+          }
+          delete clients[userId];
+        } catch (e) {
+          console.warn(`⚠️ logout error: ${e.message}`);
+        }
+      }
+      socket.emit('logged-out', userId);
+    });
+    
+  });
   socket.on('get-relevant-messages', async ({ chatIds }) => {
-  
+    const userId = sessions[socket.id];
+    const client = clients[userId];
+    if (!client) return;
     const result = [];
   
     for (const chatId of chatIds) {
@@ -183,106 +173,153 @@ io.on('connection', (socket) => {
     socket.emit('relevant-messages', result);
   });
   
-
-  socket.on('quick-reply', async ({ chatId, text, repliedToId, author }) => {
+  socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author }) => {
     try {
-      console.log('🚀 quick-reply вызван!');
-      
-      const lid = author?._serialized;
-      if (!lid || !lid.includes('@lid')) {
-        console.warn('❌ Неверный формат автора, нужен @lid:', author);
+      const userId = sessions[socket.id];
+      const client = clients[userId];
+      if (!client) return;
+  
+      const lidSerialized = author?._serialized;
+      if (!lidSerialized || !lidSerialized.endsWith('@lid')) {
+        console.warn('❌ Автор не является lid:', lidSerialized);
         return;
       }
   
-      console.log(`🧠 Пытаемся получить номер по lid: ${lid}`);
+      // 1. Получаем сообщения из группы
+      const chat = await client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
   
-      // ⬇️ Puppeteer внутри функции
-      const browser = await puppeteer.launch({
-        headless: false,
-        executablePath: '/usr/bin/google-chrome',
-        userDataDir: './.wpp-session',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--start-maximized'
-        ] 
+      // 2. Находим сообщение по lid и text
+      const targetMsg = messages.find((msg) => {
+        const participant = msg.id?.participant?._serialized;
+        const body = msg.body?.trim();
+        return (
+          participant === lidSerialized &&
+          (!sendUserText || body === sendUserText.trim())
+        );
       });
   
-      const page = await browser.newPage();
-      await page.goto('https://web.whatsapp.com');
-  
-      console.log('⏳ Ждём загрузки WhatsApp Web...');
-      await page.waitForSelector('div[role="textbox"]', { timeout: 120000 });
-  
-      const wid = await page.evaluate((lid) => {
-        try {
-          const jidConverter = window.require("WAWebJidToWid");
-          const apiContact = window.require("WAWebApiContact");
-  
-          if (!jidConverter || !apiContact) return null;
-          const internalLid = jidConverter.lidUserJidToUserLid(lid);
-          const contact = apiContact.getPhoneNumber(internalLid);
-          return contact?._serialized || null;
-        } catch (e) {
-          console.warn('❌ Ошибка в evaluate:', e);
-          return null;
-        }
-      }, lid);
-  
-      await browser.close();
-  
-      if (!wid || !wid.includes('@c.us')) {
-        console.warn('❌ Не удалось извлечь номер из lid');
+      if (!targetMsg) {
+        console.warn(`❌ Не найдено сообщение от ${lidSerialized} с текстом "${sendUserText}"`);
         return;
       }
   
-      console.log('✅ Получен номер:', wid);
+      console.log('📌 Найдено сообщение от lid:', targetMsg.id._serialized);
   
-      // 🔥 Отправка личного сообщения
-      
-      await client.sendMessage(wid, text);
-      console.log('📤 Сообщение отправлено в личку:', wid);
+      // 3. Получаем реальный c.us ID через браузер
+      const page = client.pupPage;
+      const realCUsId = await page.evaluate(async (lid) => {
+        try {
+          const storeReady = () => {
+            return new Promise((resolve) => {
+              if (window.Store?.Contact) return resolve();
+              webpackChunkwhatsapp_web_client.push([
+                ['custom'],
+                {},
+                (req) => {
+                  for (let m in req.c) {
+                    try {
+                      const mod = req(m);
+                      if (mod?.default?.getContact) {
+                        window.Store = window.Store || {};
+                        window.Store.Contact = mod.default;
+                        break;
+                      }
+                    } catch (e) {}
+                  }
+                  resolve();
+                },
+              ]);
+            });
+          };
+  
+          await storeReady();
+          const contact = window.Store.Contact.get(lid);
+          const phone = contact?.phoneNumber;
+          return phone ? `${phone}` : null;
+        } catch (err) {
+          return null;
+        }
+      }, lidSerialized);
+  
+      if (!realCUsId) {
+        console.warn('❌ Не удалось получить c.us для lid:', lidSerialized);
+        return;
+      }
+  
+      // 4. Отправка сообщения
+      await client.sendMessage(realCUsId, text);
+      console.log(`📤 Сообщение отправлено на ${realCUsId}`);
+  
+      // 5. Отмечаем как обработанное
       addRepliedId(repliedToId);
     } catch (err) {
       console.error('❌ Ошибка в quick-reply:', err.message);
     }
   });
   
+
+  
+  
   
   socket.on('get-replied-messages', async () => {
-  const repliedIds = getRepliedIds();
-  const allChats = await client.getChats();
-  const result = [];
-
-  for (const chat of allChats) {
-    const messages = await chat.fetchMessages({ limit: 250 });
-    for (const msg of messages) {
-      if (repliedIds.includes(msg.id._serialized)) {
-        result.push({
-          id: msg.id._serialized,
-          chatId: chat.id._serialized,
-          body: msg.body,
-          fromMe: msg.fromMe,
-          timestamp: msg.timestamp,
-          senderName: msg._data?.notifyName || msg.author || chat.name || chat.id.user,
-          avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-          author: msg.id.participant || msg.author || msg.from
-        });
+    const userId = sessions[socket.id];
+    const client = clients[userId];
+    if (!client) return;
+  
+    const repliedIds = getRepliedIds();
+    const result = [];
+  
+    let allChats = [];
+    try {
+      allChats = await client.getChats();
+    } catch (e) {
+      console.error('❌ Ошибка при получении чатов:', e.message);
+      socket.emit('replied-messages', []);
+      return;
+    }
+  
+    // Фильтруем только валидные чаты
+    const validChats = allChats.filter(chat => chat?.id?._serialized);
+  
+    for (const chat of validChats) {
+      try {
+        const messages = await chat.fetchMessages({ limit: 250 });
+  
+        for (const msg of messages) {
+          if (repliedIds.includes(msg.id._serialized)) {
+            result.push({
+              id: msg.id._serialized,
+              chatId: chat.id._serialized,
+              body: msg.body,
+              fromMe: msg.fromMe,
+              timestamp: msg.timestamp,
+              senderName: msg._data?.notifyName || msg.author || chat.name || chat.id.user,
+              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+              author: msg.id.participant || msg.author || msg.from
+            });
+          }
+        }
+  
+      } catch (e) {
+        console.warn(`⚠️ Ошибка при fetchMessages для чата ${chat.id._serialized}: ${e.message}`);
+        continue; // Просто пропускаем проблемный чат
       }
     }
-  }
-
-  result.sort((a, b) => b.timestamp - a.timestamp);
-  socket.emit('replied-messages', result);
+  
+    result.sort((a, b) => b.timestamp - a.timestamp);
+    socket.emit('replied-messages', result);
   });
+  
 
   socket.on('mark-as-replied', (messageId) => {
     addRepliedId(messageId);
   });
   socket.on("load-chat", async (chatId, authorId) => {
     try {
-  
+      const userId = sessions[socket.id];
+      const client = clients[userId];
+      if (!client) return;
       const chat = await client.getChatById(chatId);
       const messages = await chat.fetchMessages({ limit: 1500 });
   
@@ -306,62 +343,125 @@ io.on('connection', (socket) => {
       console.error("❌ Error loading chat history:", err.message);
     }
   });
+  socket.on('restore-session', async ({ userId }) => {
+    let client = clients[userId];
+    
+    if (!client) {
+      const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
+      if (fs.existsSync(sessionPath)) {
+        console.log(`[🔁] Восстанавливаем сессию для ${userId}`);
+        client = new Client({
+          authStrategy: new LocalAuth({ clientId: userId }),
+          puppeteer: {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+          }
+        });
   
-  if (isClientReady) {
-    client.getChats().then(chats => {
-      const simplifiedChats = chats.map(chat => ({
+        clients[userId] = client;
+        sessions[socket.id] = userId;
+  
+        client.initialize();
+  
+        client.on('ready', async () => {
+          console.log(`[✅] Клиент готов после восстановления ${userId}`);
+          const chats = await client.getChats();
+          const simplified = chats.map(chat => ({
+            id: chat.id._serialized,
+            name: chat.name || chat.id.user || 'Unnamed Chat',
+            avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+            lastMessage: chat.lastMessage?.body || ''
+          }));
+          socket.emit('ready', { userId });
+          socket.emit('chats', simplified);
+        });
+  
+        client.on('message', (msg) => {
+          const from = msg.from;
+          if (!chatHistories[from]) chatHistories[from] = [];
+          chatHistories[from].push({
+            id: msg.id,
+            body: msg.body,
+            fromMe: msg.fromMe,
+            timestamp: msg.timestamp,
+            notifyName: msg._data?.notifyName || '',
+            author: msg.id.participant || msg.author || msg.from
+          });
+          socket.emit('message', msg);
+        });
+  
+      } else {
+        console.log(`[⚠️] Нет сессии в файловой системе для ${userId}, запрашиваем новую`);
+        socket.emit('start-session');
+        return;
+      }
+    } else {
+      sessions[socket.id] = userId;
+      socket.emit('ready', { userId });
+      const chats = await client.getChats();
+      const simplified = chats.map(chat => ({
         id: chat.id._serialized,
         name: chat.name || chat.id.user || 'Unnamed Chat',
         avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
         lastMessage: chat.lastMessage?.body || ''
-      }))
-      socket.emit('chats', simplifiedChats)
+      }));
+      socket.emit('chats', simplified);
+    }
+  });
+  socket.on('logout', async ({ userId }) => {
+    const client = clients[userId];
+    if (client) {
+      try {
+        console.log(`[🚪] Логаут для ${userId}`);
+        await client.logout();  // Выход из WhatsApp
+        await client.destroy(); // Удаление экземпляра
+  
+        delete clients[userId];
+        Object.keys(sessions).forEach((key) => {
+          if (sessions[key] === userId) delete sessions[key];
+        });
+  
+        // Удаление сессионной папки
+        const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
+        if (fs.existsSync(sessionPath)) {
+          fs.rmSync(sessionPath, { recursive: true, force: true });
+          console.log(`[🗑️] Папка сессии удалена: ${sessionPath}`);
+        }
+  
+        socket.emit('logged-out', userId);
+      } catch (e) {
+        console.error(`❌ Ошибка при logout для ${userId}:`, e.message);
+      }
+    } else {
+      console.log(`[ℹ️] Клиент не найден при logout для ${userId}`);
+      socket.emit('logged-out', userId);
+    }
+  });
+  
+  if (isClientReady) {
+    const userId = sessions[socket.id];
+    const client = clients[userId];
+    if (!client) return;
+    client.getChats().then(chats => {
+      const simplifiedChats = chats
+        .filter(chat => chat?.id?._serialized)
+        .map(chat => ({
+          id: chat.id._serialized,
+          name: chat.name || chat.id.user || 'Unnamed Chat',
+          avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+          lastMessage: chat.lastMessage?.body || ''
+        }));
+      socket.emit('chats', simplifiedChats);
     }).catch(e => {
       console.error('🚨 Failed to get chats:', e.message);
     });
+    
   } else {
     socket.emit('not-ready');
   }
 
-  client.on('message', (msg) => {
-    client.on('message', (msg) => {
-      io.emit('new-message', {
-        chatId: msg.from,
-        message: {
-          id: msg.id._serialized,
-          body: msg.body,
-          fromMe: msg.fromMe,
-          timestamp: msg.timestamp,
-          senderName: msg._data?.notifyName || msg.from,
-          author: msg.id.participant || msg.author || msg.from
-        }
-      });
-    });
-    
-  });
-  socket.on('logout', async () => {
-    try {
-      // 1. Завершаем сессию
-      await client.logout();
-  
-      // 2. Удаляем всю папку сессии
-      const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session-dashboard');
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-      }
-  
-      // 3. Полностью уничтожаем текущий клиент
-      await client.destroy();
-  
-      // 4. Переинициализируем — покажет QR повторно
-      client.initialize();
-  
-    } catch (err) {
-      console.error('Logout error:', err);
-    }
-  });
 });
 
-client.initialize();
+// client.initialize();
 
 server.listen(3001, () => console.log('Backend server running on http://localhost:3001'));
