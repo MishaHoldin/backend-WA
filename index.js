@@ -45,8 +45,9 @@ function addRepliedId(messageId) {
 
 
 io.on('connection', (socket) => {
-  socket.on('start-session', async () => {
-    const userId = uuidv4();
+  socket.on('start-session', async (data) => {
+    const userId = data?.userId || uuidv4();
+  
     console.log(`[🔄] start-session запущен для socket.id = ${socket.id}`);
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: userId }),
@@ -257,51 +258,46 @@ io.on('connection', (socket) => {
   });
   
 
-  
-  
-  
-  socket.on('get-replied-messages', async () => {
+  socket.on('get-replied-messages', async ({ chatIds }) => {
     const userId = sessions[socket.id];
     const client = clients[userId];
+    console.log(`[🔍] Получены chatIds в get-replied-messages:`, chatIds);
+
     if (!client) return;
-  
-    const repliedIds = getRepliedIds();
     const result = [];
   
-    let allChats = [];
-    try {
-      allChats = await client.getChats();
-    } catch (e) {
-      console.error('❌ Ошибка при получении чатов:', e.message);
-      socket.emit('replied-messages', []);
-      return;
-    }
-  
-    // Фильтруем только валидные чаты
-    const validChats = allChats.filter(chat => chat?.id?._serialized);
-  
-    for (const chat of validChats) {
+    for (const chatId of chatIds) {
+      let chat;
       try {
-        const messages = await chat.fetchMessages({ limit: 250 });
-  
-        for (const msg of messages) {
-          if (repliedIds.includes(msg.id._serialized)) {
-            result.push({
-              id: msg.id._serialized,
-              chatId: chat.id._serialized,
-              body: msg.body,
-              fromMe: msg.fromMe,
-              timestamp: msg.timestamp,
-              senderName: msg._data?.notifyName || msg.author || chat.name || chat.id.user,
-              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-              author: msg.id.participant || msg.author || msg.from
-            });
-          }
-        }
-  
+        chat = await client.getChatById(chatId);
+        if (!chat || !chat.id || !chat.id._serialized) continue;
       } catch (e) {
-        console.warn(`⚠️ Ошибка при fetchMessages для чата ${chat.id._serialized}: ${e.message}`);
-        continue; // Просто пропускаем проблемный чат
+        console.error(`[❌] getChatById failed for ${chatId}:`, e.message);
+        continue;
+      }
+  
+      let messages = [];
+      try {
+        messages = await chat.fetchMessages({ limit: 250 });
+      } catch (e) {
+        console.error(`[❌] fetchMessages failed for ${chatId}:`, e.message);
+        continue;
+      }
+  
+      const repliedIds = getRepliedIds();
+      for (const msg of messages) {
+        if (repliedIds.includes(msg.id._serialized)) {
+          result.push({
+            id: msg.id._serialized,
+            chatId,
+            body: msg.body,
+            fromMe: msg.fromMe,
+            timestamp: msg.timestamp,
+            senderName: msg._data?.notifyName || msg.author || chat.name || chatId,
+            avatar: chat.id?.user ? `https://ui-avatars.com/api/?name=${chat.name || chatId}` : '',
+            author: msg.id.participant || msg.author || msg.from
+          });
+        }
       }
     }
   
