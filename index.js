@@ -250,9 +250,7 @@ io.on('connection', (socket) => {
       // 4. Отправка сообщения
       await client.sendMessage(realCUsId, text);
       console.log(`📤 Сообщение отправлено на ${realCUsId}`);
-  
-      // 5. Отмечаем как обработанное
-      addRepliedId(repliedToId);
+
     } catch (err) {
       console.error('❌ Ошибка в quick-reply:', err.message);
     }
