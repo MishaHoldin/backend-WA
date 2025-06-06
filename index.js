@@ -257,7 +257,106 @@ io.on('connection', (socket) => {
     }
   });
   
-
+  socket.on("load-chat-by-lid", async ({ chatId, lid, sendUserText }) => {
+    try {
+      const userId = sessions[socket.id];
+      const client = clients[userId];
+      if (!client) return;
+  
+      const lidSerialized = lid;
+      if (!lidSerialized || !lidSerialized.endsWith('@lid')) {
+        console.warn('❌ Передан lid не в формате @lid:', lidSerialized);
+        return;
+      }
+  
+      // 1. Получаем сообщения из группы
+      const chat = await client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 150 });
+  
+      // 2. Ищем сообщение от lid с нужным текстом
+      const targetMsg = messages.find((msg) => {
+        const participant = msg.id?.participant?._serialized;
+        const body = msg.body?.trim();
+        return (
+          participant === lidSerialized &&
+          (!sendUserText || body === sendUserText.trim())
+        );
+      });
+  
+      if (!targetMsg) {
+        console.warn(`❌ Не найдено сообщение от ${lidSerialized} с текстом "${sendUserText}"`);
+        return;
+      }
+  
+      console.log('📌 Найдено сообщение от lid:', targetMsg.id._serialized);
+  
+      // 3. Получаем wid (c.us ID) через Puppeteer
+      const page = client.pupPage;
+      const realCUsId = await page.evaluate(async (lid) => {
+        try {
+          const storeReady = () => {
+            return new Promise((resolve) => {
+              if (window.Store?.Contact) return resolve();
+              webpackChunkwhatsapp_web_client.push([
+                ['custom'],
+                {},
+                (req) => {
+                  for (let m in req.c) {
+                    try {
+                      const mod = req(m);
+                      if (mod?.default?.getContact) {
+                        window.Store = window.Store || {};
+                        window.Store.Contact = mod.default;
+                        break;
+                      }
+                    } catch (e) {}
+                  }
+                  resolve();
+                },
+              ]);
+            });
+          };
+  
+          await storeReady();
+          const contact = window.Store.Contact.get(lid);
+          const phone = contact?.phoneNumber;
+          console.log('[🧩 debug] lid:', lid, 'contact:', contact);
+          return phone ? `${phone}` : null;
+        } catch (err) {
+          console.error('[🧩 error] evaluate failed:', err.message);
+          return null;
+        }
+      }, lidSerialized);
+  
+      if (!realCUsId) {
+        console.warn('❌ Не удалось получить c.us для lid:', lidSerialized);
+        return;
+      }
+  
+      console.log(`📥 Получен realCUsId: ${realCUsId}`);
+  
+      // 4. Загружаем one-to-one чат по realCUsId
+      const realChat = await client.getChatById(realCUsId);
+      const fullMessages = await realChat.fetchMessages({ limit: 500 });
+  
+      const filtered = fullMessages.map((m) => ({
+        id: m.id._serialized,
+        body: m.body,
+        fromMe: m.fromMe,
+        timestamp: m.timestamp,
+        senderName: m._data?.notifyName || realChat.name || realCUsId,
+        author: m.author || m.from
+      }));
+      console.log(`filtered`,filtered)
+      socket.emit("chat-history", { chatId, messages: filtered });
+  
+    } catch (err) {
+      console.error("❌ Ошибка в load-chat-by-lid:", err.message);
+    }
+  });
+  
+  
+  
   socket.on('get-replied-messages', async ({ chatIds }) => {
     const userId = sessions[socket.id];
     const client = clients[userId];
