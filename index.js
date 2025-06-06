@@ -309,6 +309,50 @@ io.on('connection', (socket) => {
   socket.on('mark-as-replied', (messageId) => {
     addRepliedId(messageId);
   });
+  socket.on('resolve-contact', async ({ lid }, callback) => {
+    try {
+      const userId = sessions[socket.id];
+      const client = clients[userId];
+      if (!client || !client.pupPage) return callback(null);
+  
+      const page = client.pupPage;
+  
+      const wid = await page.evaluate(async (lid) => {
+        const storeReady = () => {
+          return new Promise((resolve) => {
+            if (window.Store?.Contact) return resolve();
+            webpackChunkwhatsapp_web_client.push([
+              ['custom'],
+              {},
+              (req) => {
+                for (let m in req.c) {
+                  try {
+                    const mod = req(m);
+                    if (mod?.default?.getContact) {
+                      window.Store = window.Store || {};
+                      window.Store.Contact = mod.default;
+                      break;
+                    }
+                  } catch (e) {}
+                }
+                resolve();
+              },
+            ]);
+          });
+        };
+  
+        await storeReady();
+        const contact = window.Store.Contact.get(lid);
+        return contact?.wid || null;
+      }, lid);
+  
+      callback(wid);
+    } catch (err) {
+      console.error('resolve-contact error:', err.message);
+      callback(null);
+    }
+  });
+  
   socket.on("load-chat", async (chatId, authorId) => {
     try {
       const userId = sessions[socket.id];
