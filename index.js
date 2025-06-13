@@ -20,13 +20,20 @@ app.use(cors({
 
 app.use(express.json());
 
+// 1️⃣ Создаем express-session middleware
 const sessionMiddleware = session({
   secret: 'super-secret-key',
   resave: false,
   saveUninitialized: false
 });
 
+// 2️⃣ Применяем в express
 app.use(sessionMiddleware);
+
+// 3️⃣ Передаем его в Socket.IO
+io.use(sharedSession(sessionMiddleware, {
+  autoSave: true
+}));
 
 function isAuthenticated(req, res, next) {
   if (req.session?.userId) return next();
