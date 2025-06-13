@@ -20,27 +20,28 @@ app.use(cors({
 
 app.use(express.json());
 
-// 1️⃣ Создаем express-session middleware
-const sessionMiddleware = session({
-  secret: 'super-secret-key',
-  resave: false,
-  saveUninitialized: false
+const server = http.createServer(app);
+
+// ✅ СНАЧАЛА создаём io
+const io = new Server(server, {
+  cors: {
+    origin: 'https://wa-tg.netlify.app',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
 });
 
-// 2️⃣ Применяем в express
-app.use(sessionMiddleware);
+const sharedSession = require("express-socket.io-session");
 
-// 3️⃣ Передаем его в Socket.IO
+// ✅ ТОЛЬКО ПОТОМ подключаем middleware
 io.use(sharedSession(sessionMiddleware, {
   autoSave: true
 }));
-
 function isAuthenticated(req, res, next) {
   if (req.session?.userId) return next();
   return res.status(401).json({ error: 'Not authenticated' });
 }
 
-const server = http.createServer(app);
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
