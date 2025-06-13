@@ -41,7 +41,8 @@ puppeteer.use(StealthPlugin());
 const io = new Server(server, {
   cors: {
     origin: 'https://wa-tg.netlify.app',
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 const sharedSession = require("express-socket.io-session");
