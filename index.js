@@ -40,7 +40,7 @@ puppeteer.use(StealthPlugin());
 
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: 'https://wa-tg.netlify.app',
     methods: ['GET', 'POST']
   }
 });
