@@ -1,13 +1,37 @@
 // === backend/index.js ===
 const express = require('express');
-const { Client, NoAuth, LocalAuth  } = require('whatsapp-web.js');
+const { Client, NoAuth, LocalAuth, MessageMedia   } = require('whatsapp-web.js');
 const { v4: uuidv4 } = require('uuid');
+const session = require('express-session');
+const bcrypt = require('bcrypt');
+const User = require('./models/user');
+const sequelize = require('./sequelize');
 const qrcode = require('qrcode');
 const http = require('http');
 const { Server } = require('socket.io');
 const fs = require('fs');
 const path = require('path');
 const app = express();
+const cors = require('cors');
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://dashbro.space'],
+  credentials: true
+}));
+app.use(express.json());
+
+const sessionMiddleware = session({
+  secret: 'super-secret-key',
+  resave: false,
+  saveUninitialized: false
+});
+
+app.use(sessionMiddleware);
+
+function isAuthenticated(req, res, next) {
+  if (req.session?.userId) return next();
+  return res.status(401).json({ error: 'Not authenticated' });
+}
+
 const server = http.createServer(app);
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -19,6 +43,12 @@ const io = new Server(server, {
     methods: ['GET', 'POST']
   }
 });
+const sharedSession = require("express-socket.io-session");
+
+io.use(sharedSession(sessionMiddleware, {
+  autoSave: true
+}));
+
 let isClientReady = false;
 const REPLIED_PATH = path.join(__dirname, 'repliedMessages.json');
 const clients = {};
@@ -43,6 +73,87 @@ function addRepliedId(messageId) {
   }
 }
 
+app.post('/api/login', async (req, res) => {
+  const { login, password } = req.body;
+  const user = await User.findOne({ where: { login } });
+
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  // 👇 Добавь вывод всей модели
+  console.log('[🔍 LOGIN USER]', user.toJSON());
+
+  req.session.userId = user.id;
+  res.json({ success: true, whatsappUserId: user.whatsappUserId });
+});
+
+
+// 🚪 Логаут
+// app.post('/api/logout', (req, res) => {
+//   req.session.destroy(() => {
+//     res.json({ success: true });
+//   });
+// });
+
+// ✅ Проверка авторизации
+app.get('/api/check-auth', (req, res) => {
+  res.json({ authenticated: !!req.session.userId });
+});
+// 📋 Получить всех пользователей
+app.get('/api/users', isAuthenticated, async (req, res) => {
+  const users = await User.findAll({ attributes: ['id', 'login'] });
+  res.json(users);
+});
+
+// ➕ Создать нового пользователя
+app.post('/api/users', isAuthenticated, async (req, res) => {
+  const { login, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  const user = await User.create({ login, password: hash });
+  res.json({ id: user.id, login: user.login });
+});
+
+// ✏️ Изменить пароль
+app.put('/api/users/:id', isAuthenticated, async (req, res) => {
+  const { password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  await User.update({ password: hash }, { where: { id: req.params.id } });
+  res.json({ success: true });
+});
+
+// 🗑 Удалить пользователя
+app.delete('/api/users/:id', isAuthenticated, async (req, res) => {
+  await User.destroy({ where: { id: req.params.id } });
+  res.json({ success: true });
+});
+
+app.get('/api/me', isAuthenticated, async (req, res) => {
+  const user = await User.findByPk(req.session.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  res.json({
+    login: user.login,
+    whatsappUserId: user.whatsappUserId
+  });
+});
+
+async function waitForStore(client, timeout = 10000) {
+  const page = client.pupPage;
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    try {
+      const isReady = await page.evaluate(() => !!window.Store?.Chat);
+      if (isReady) return true;
+    } catch (e) {
+      // Игнорируем временные ошибки
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  throw new Error('Store did not initialize in time');
+}
 
 io.on('connection', (socket) => {
   socket.on('start-session', async (data) => {
@@ -72,28 +183,40 @@ io.on('connection', (socket) => {
     
     
     client.on('ready', async () => {
-      console.log(`[✅] Клиент готов после восстановления ${userId}`);
+      console.log(`[✅] Клиент готов после *старта новой сессии* ${userId}`);
+      console.log('[✅] Клиент готов, session:', socket.handshake.session);
+      const expressSessionUserId = socket.handshake.session?.userId;
+      console.log('[ℹ️] expressSessionUserId from socket session:', expressSessionUserId);
     
-      let chats;
-      try {
-        chats = await client.getChats();
-      } catch (err) {
-        console.error(`❌ Ошибка при получении чатов: ${err.message}`);
-        return;
+      if (expressSessionUserId) {
+        const [updatedCount] = await User.update(
+          { whatsappUserId: userId },
+          { where: { id: expressSessionUserId } }
+        );
+        console.log('[📝] Обновлено пользователей:', updatedCount);
+      } else {
+        console.warn('[⚠️] Нет expressSessionUserId — не обновляем whatsappUserId');
       }
-    
-      const simplified = chats
-        .filter(chat => chat?.id?._serialized)
-        .map(chat => ({
+      try {
+        // 🕒 Подождать, пока Store действительно доступен
+        await waitForStore(client);
+        
+        const chats = await client.getChats();
+        const simplified = chats.map(chat => ({
           id: chat.id._serialized,
           name: chat.name || chat.id.user || 'Unnamed Chat',
           avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
           lastMessage: chat.lastMessage?.body || ''
         }));
     
-      socket.emit('ready', { userId });
-      socket.emit('chats', simplified);
+        socket.emit('ready', { userId });
+        socket.emit('chats', simplified);
+    
+      } catch (err) {
+        console.error(`❌ Ошибка при получении чатов: ${err.message}`);
+      }
     });
+    
     
 
     client.on('message', (msg) => {
@@ -109,23 +232,24 @@ io.on('connection', (socket) => {
       });
       socket.emit('message', msg);
     });
-    socket.on('logout', async ({ userId }) => {
-      const client = clients[userId];
-      if (client) {
-        try {
-          await client.logout();
-          if (client.pupBrowser) {
-            await client.destroy();
-          }
-          delete clients[userId];
-        } catch (e) {
-          console.warn(`⚠️ logout error: ${e.message}`);
-        }
-      }
-      socket.emit('logged-out', userId);
-    });
+    // socket.on('logout', async ({ userId }) => {
+    //   const client = clients[userId];
+    //   if (client) {
+    //     try {
+    //       await client.logout();
+    //       if (client.pupBrowser) {
+    //         await client.destroy();
+    //       }
+    //       delete clients[userId];
+    //     } catch (e) {
+    //       console.warn(`⚠️ logout error: ${e.message}`);
+    //     }
+    //   }
+    //   socket.emit('logged-out', userId);
+    // });
     
   });
+  
   socket.on('get-relevant-messages', async ({ chatIds }) => {
     const userId = sessions[socket.id];
     const client = clients[userId];
@@ -174,7 +298,7 @@ io.on('connection', (socket) => {
     socket.emit('relevant-messages', result);
   });
   
-  socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author }) => {
+  socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author, media }) => {
     try {
       const userId = sessions[socket.id];
       const client = clients[userId];
@@ -186,18 +310,13 @@ io.on('connection', (socket) => {
         return;
       }
   
-      // 1. Получаем сообщения из группы
       const chat = await client.getChatById(chatId);
       const messages = await chat.fetchMessages({ limit: 100 });
   
-      // 2. Находим сообщение по lid и text
       const targetMsg = messages.find((msg) => {
         const participant = msg.id?.participant?._serialized;
         const body = msg.body?.trim();
-        return (
-          participant === lidSerialized &&
-          (!sendUserText || body === sendUserText.trim())
-        );
+        return participant === lidSerialized && (!sendUserText || body === sendUserText.trim());
       });
   
       if (!targetMsg) {
@@ -205,53 +324,51 @@ io.on('connection', (socket) => {
         return;
       }
   
-      console.log('📌 Найдено сообщение от lid:', targetMsg.id._serialized);
-  
-      // 3. Получаем реальный c.us ID через браузер
       const page = client.pupPage;
       const realCUsId = await page.evaluate(async (lid) => {
         try {
-          const storeReady = () => {
-            return new Promise((resolve) => {
-              if (window.Store?.Contact) return resolve();
-              webpackChunkwhatsapp_web_client.push([
-                ['custom'],
-                {},
-                (req) => {
-                  for (let m in req.c) {
-                    try {
-                      const mod = req(m);
-                      if (mod?.default?.getContact) {
-                        window.Store = window.Store || {};
-                        window.Store.Contact = mod.default;
-                        break;
-                      }
-                    } catch (e) {}
+          const storeReady = () => new Promise((resolve) => {
+            if (window.Store?.Contact) return resolve();
+            webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
+              for (let m in req.c) {
+                try {
+                  const mod = req(m);
+                  if (mod?.default?.getContact) {
+                    window.Store = window.Store || {};
+                    window.Store.Contact = mod.default;
+                    break;
                   }
-                  resolve();
-                },
-              ]);
-            });
-          };
-  
+                } catch (e) {}
+              }
+              resolve();
+            }]);
+          });
           await storeReady();
           const contact = window.Store.Contact.get(lid);
           const phone = contact?.phoneNumber;
           return phone ? `${phone}` : null;
-        } catch (err) {
+        } catch {
           return null;
         }
       }, lidSerialized);
   
       if (!realCUsId) {
-        console.warn('❌ Не удалось получить c.us для lid:', lidSerialized);
+        console.warn('❌ Не удалось получить c.us ID');
         return;
       }
   
-      // 4. Отправка сообщения
-      await client.sendMessage(realCUsId, text);
-      console.log(`📤 Сообщение отправлено на ${realCUsId}`);
-
+      // === 📎 Отправка медиа, если есть ===
+      if (media?.base64 && media?.mimeType) {
+        const mediaToSend = new MessageMedia(media.mimeType, media.base64);
+        await client.sendMessage(realCUsId, mediaToSend, {
+          caption: media.caption || text
+        });
+        console.log(`📤 Медиа с подпиcью отправлено на ${realCUsId}`);
+      } else {
+        await client.sendMessage(realCUsId, text);
+        console.log(`📤 Текст отправлен на ${realCUsId}`);
+      }
+  
     } catch (err) {
       console.error('❌ Ошибка в quick-reply:', err.message);
     }
@@ -288,7 +405,6 @@ io.on('connection', (socket) => {
         return;
       }
   
-      console.log('📌 Найдено сообщение от lid:', targetMsg.id._serialized);
   
       // 3. Получаем wid (c.us ID) через Puppeteer
       const page = client.pupPage;
@@ -320,7 +436,6 @@ io.on('connection', (socket) => {
           await storeReady();
           const contact = window.Store.Contact.get(lid);
           const phone = contact?.phoneNumber;
-          console.log('[🧩 debug] lid:', lid, 'contact:', contact);
           return phone ? `${phone}` : null;
         } catch (err) {
           console.error('[🧩 error] evaluate failed:', err.message);
@@ -333,7 +448,6 @@ io.on('connection', (socket) => {
         return;
       }
   
-      console.log(`📥 Получен realCUsId: ${realCUsId}`);
   
       // 4. Загружаем one-to-one чат по realCUsId
       const realChat = await client.getChatById(realCUsId);
@@ -347,7 +461,6 @@ io.on('connection', (socket) => {
         senderName: m._data?.notifyName || realChat.name || realCUsId,
         author: m.author || m.from
       }));
-      console.log(`filtered`,filtered)
       socket.emit("chat-history", { chatId, messages: filtered });
   
     } catch (err) {
@@ -355,12 +468,9 @@ io.on('connection', (socket) => {
     }
   });
   
-  
-  
   socket.on('get-replied-messages', async ({ chatIds }) => {
     const userId = sessions[socket.id];
     const client = clients[userId];
-    console.log(`[🔍] Получены chatIds в get-replied-messages:`, chatIds);
 
     if (!client) return;
     const result = [];
@@ -486,7 +596,6 @@ io.on('connection', (socket) => {
     if (!client) {
       const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
       if (fs.existsSync(sessionPath)) {
-        console.log(`[🔁] Восстанавливаем сессию для ${userId}`);
         client = new Client({
           authStrategy: new LocalAuth({ clientId: userId }),
           puppeteer: {
@@ -502,16 +611,25 @@ io.on('connection', (socket) => {
   
         client.on('ready', async () => {
           console.log(`[✅] Клиент готов после восстановления ${userId}`);
-          const chats = await client.getChats();
-          const simplified = chats.map(chat => ({
-            id: chat.id._serialized,
-            name: chat.name || chat.id.user || 'Unnamed Chat',
-            avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-            lastMessage: chat.lastMessage?.body || ''
-          }));
-          socket.emit('ready', { userId });
-          socket.emit('chats', simplified);
+          console.log('[✅] Клиент готов, session:', socket.handshake.session);
+          try {
+            await waitForStore(client); // ⬅️ Ждем пока Store готов
+            const chats = await client.getChats(); // теперь можно безопасно
+            const simplified = chats.map(chat => ({
+              id: chat.id._serialized,
+              name: chat.name || chat.id.user || 'Unnamed Chat',
+              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+              lastMessage: chat.lastMessage?.body || ''
+            }));
+        
+            socket.emit('ready', { userId });
+            socket.emit('chats', simplified);
+          } catch (err) {
+            console.error(`❌ Ошибка в client.on('ready'): ${err.message}`);
+            socket.emit('error', { message: 'Не удалось загрузить чаты. Попробуйте позже.' });
+          }
         });
+        
   
         client.on('message', (msg) => {
           const from = msg.from;
@@ -545,35 +663,35 @@ io.on('connection', (socket) => {
       socket.emit('chats', simplified);
     }
   });
-  socket.on('logout', async ({ userId }) => {
-    const client = clients[userId];
-    if (client) {
-      try {
-        console.log(`[🚪] Логаут для ${userId}`);
-        await client.logout();  // Выход из WhatsApp
-        await client.destroy(); // Удаление экземпляра
+  // socket.on('logout', async ({ userId }) => {
+  //   const client = clients[userId];
+  //   if (client) {
+  //     try {
+  //       console.log(`[🚪] Логаут для ${userId}`);
+  //       await client.logout();  // Выход из WhatsApp
+  //       await client.destroy(); // Удаление экземпляра
   
-        delete clients[userId];
-        Object.keys(sessions).forEach((key) => {
-          if (sessions[key] === userId) delete sessions[key];
-        });
+  //       delete clients[userId];
+  //       Object.keys(sessions).forEach((key) => {
+  //         if (sessions[key] === userId) delete sessions[key];
+  //       });
   
-        // Удаление сессионной папки
-        const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
-        if (fs.existsSync(sessionPath)) {
-          fs.rmSync(sessionPath, { recursive: true, force: true });
-          console.log(`[🗑️] Папка сессии удалена: ${sessionPath}`);
-        }
+  //       // Удаление сессионной папки
+  //       const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
+  //       if (fs.existsSync(sessionPath)) {
+  //         fs.rmSync(sessionPath, { recursive: true, force: true });
+  //         console.log(`[🗑️] Папка сессии удалена: ${sessionPath}`);
+  //       }
   
-        socket.emit('logged-out', userId);
-      } catch (e) {
-        console.error(`❌ Ошибка при logout для ${userId}:`, e.message);
-      }
-    } else {
-      console.log(`[ℹ️] Клиент не найден при logout для ${userId}`);
-      socket.emit('logged-out', userId);
-    }
-  });
+  //       socket.emit('logged-out', userId);
+  //     } catch (e) {
+  //       console.error(`❌ Ошибка при logout для ${userId}:`, e.message);
+  //     }
+  //   } else {
+  //     console.log(`[ℹ️] Клиент не найден при logout для ${userId}`);
+  //     socket.emit('logged-out', userId);
+  //   }
+  // });
   
   if (isClientReady) {
     const userId = sessions[socket.id];
