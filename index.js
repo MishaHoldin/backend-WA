@@ -14,12 +14,7 @@ const path = require('path');
 const app = express();
 const cors = require('cors');
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://dashbro.space',
-    'https://www.dashbro.space',
-    'https://wa-tg.netlify.app'
-  ],
+  origin: 'https://wa-tg.netlify.app',
   credentials: true
 }));
 
