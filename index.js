@@ -158,66 +158,65 @@ async function waitForStore(client, timeout = 10000) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('start-session', async (data) => {
-    if (!data) {
-      console.warn('[⚠️] start-session: параметри не передані');
+  socket.on('check-session', ({ userId }) => {
+    const client = clients[String(userId)];
+    if (!client) {
+      socket.emit('session-status', { ready: false, hasQR: false });
       return;
     }
-    console.log(`data: ${JSON.stringify(data)}`);
-    const { userId, whatsappUserId } = data;
   
+    const isReady = client.info?.wid !== undefined;
+    const hasQR = client?.info === undefined;
+  
+    socket.emit('session-status', {
+      ready: isReady,
+      hasQR: hasQR
+    });
+  });
+  
+  socket.on('start-session', async ({ userId }) => {
     if (!userId) {
-      console.warn('[⚠️] start-session: немає userId');
+      console.warn('[⚠️] start-session: userId не передан');
       return;
     }
-  
-    let realWhatsappUserId = whatsappUserId;
   
     const user = await User.findByPk(userId);
     if (!user) {
-      console.warn('[⚠️] start-session: користувач не знайдений');
+      console.warn(`[❌] start-session: пользователь с id ${userId} не найден`);
       return;
     }
   
-    if (!realWhatsappUserId) {
-      if (user.whatsappUserId) {
-        realWhatsappUserId = user.whatsappUserId;
-      } else {
-        realWhatsappUserId = uuidv4();
-        await User.update({ whatsappUserId: realWhatsappUserId }, { where: { id: user.id } });
-        console.log(`[🆕] Збережено whatsappUserId для юзера #${user.id}: ${realWhatsappUserId}`);
-      }
-    }
+    const clientKey = String(userId);
   
-    if (clients[realWhatsappUserId]) {
-      console.log(`[ℹ️] Клієнт уже існує для ${realWhatsappUserId}`);
-      sessions[socket.id] = realWhatsappUserId;
+    if (clients[clientKey]) {
+      console.log(`[ℹ️] Клиент уже существует для userId=${clientKey}`);
+      sessions[socket.id] = clientKey;
       return;
     }
   
-    console.log(`[🚀] Ініціалізація клієнта WhatsApp для ${realWhatsappUserId}`);
+    console.log(`[🚀] Инициализация клиента WhatsApp для userId=${clientKey}`);
   
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: realWhatsappUserId }),
+      authStrategy: new LocalAuth({ clientId: clientKey }),
       puppeteer: {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
       }
     });
   
-    clients[realWhatsappUserId] = client;
-    sessions[socket.id] = realWhatsappUserId;
+    clients[clientKey] = client;
+    sessions[socket.id] = clientKey;
   
     client.initialize();
   
     client.on('qr', async (qr) => {
       const qrImage = await qrcode.toDataURL(qr);
-      socket.emit('qr', { userId: realWhatsappUserId, qr: qrImage });
-      console.log(`[🧾] QR-код сгенеровано для ${realWhatsappUserId}`);
+      socket.emit('qr', { userId: clientKey, qr: qrImage });
+      console.log(`[🧾] QR-код сгенерирован для userId=${clientKey}`);
     });
   
     client.on('ready', async () => {
-      console.log(`[✅] WA-клієнт готовий: ${realWhatsappUserId}`);
+      console.log(`[✅] WA-клиент готов: userId=${clientKey}`);
       await waitForStore(client);
   
       const chats = await client.getChats();
@@ -228,7 +227,7 @@ io.on('connection', (socket) => {
         lastMessage: chat.lastMessage?.body || ''
       }));
   
-      socket.emit('ready', { userId: realWhatsappUserId });
+      socket.emit('ready', { userId: clientKey });
       socket.emit('chats', simplified);
     });
   
@@ -246,7 +245,6 @@ io.on('connection', (socket) => {
       socket.emit('message', msg);
     });
   });
-  
   
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
@@ -590,45 +588,45 @@ io.on('connection', (socket) => {
     }
   });
   socket.on('restore-session', async ({ userId }) => {
-    let client = clients[userId];
-    
+    const clientKey = String(userId);
+    let client = clients[clientKey];
+  
     if (!client) {
-      const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
+      const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
+      
       if (fs.existsSync(sessionPath)) {
         client = new Client({
-          authStrategy: new LocalAuth({ clientId: userId }),
+          authStrategy: new LocalAuth({ clientId: clientKey }),
           puppeteer: {
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
           }
         });
   
-        clients[userId] = client;
-        sessions[socket.id] = userId;
+        clients[clientKey] = client;
+        sessions[socket.id] = clientKey;
   
         client.initialize();
   
         client.on('ready', async () => {
-          console.log(`[✅] Клиент готов после восстановления ${userId}`);
-          console.log('[✅] Клиент готов, session:', socket.handshake.session);
+          console.log(`[✅] Клиент восстановлен: userId=${clientKey}`);
           try {
-            await waitForStore(client); // ⬅️ Ждем пока Store готов
-            const chats = await client.getChats(); // теперь можно безопасно
+            await waitForStore(client);
+            const chats = await client.getChats();
             const simplified = chats.map(chat => ({
               id: chat.id._serialized,
               name: chat.name || chat.id.user || 'Unnamed Chat',
               avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
               lastMessage: chat.lastMessage?.body || ''
             }));
-        
-            socket.emit('ready', { userId });
+  
+            socket.emit('ready', { userId: clientKey });
             socket.emit('chats', simplified);
           } catch (err) {
-            console.error(`❌ Ошибка в client.on('ready'): ${err.message}`);
+            console.error(`❌ Ошибка при восстановлении клиента для ${clientKey}: ${err.message}`);
             socket.emit('error', { message: 'Не удалось загрузить чаты. Попробуйте позже.' });
           }
         });
-        
   
         client.on('message', (msg) => {
           const from = msg.from;
@@ -645,13 +643,13 @@ io.on('connection', (socket) => {
         });
   
       } else {
-        console.log(`[⚠️] Нет сессии в файловой системе для ${userId}, запрашиваем новую`);
-        socket.emit('start-session');
+        console.log(`[⚠️] Нет сессии на диске для userId=${clientKey}, инициируем start-session`);
+        socket.emit('start-session', { userId: clientKey }); // 👈 важно: передай userId
         return;
       }
+  
     } else {
-      sessions[socket.id] = userId;
-      socket.emit('ready', { userId });
+      sessions[socket.id] = clientKey;
       const chats = await client.getChats();
       const simplified = chats.map(chat => ({
         id: chat.id._serialized,
@@ -659,9 +657,12 @@ io.on('connection', (socket) => {
         avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
         lastMessage: chat.lastMessage?.body || ''
       }));
+  
+      socket.emit('ready', { userId: clientKey });
       socket.emit('chats', simplified);
     }
   });
+  
   // socket.on('logout', async ({ userId }) => {
   //   const client = clients[userId];
   //   if (client) {
@@ -713,7 +714,6 @@ io.on('connection', (socket) => {
   } else {
     socket.emit('not-ready');
   }
-
 });
 
 // client.initialize();
