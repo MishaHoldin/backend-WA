@@ -87,7 +87,11 @@ app.post('/api/login', async (req, res) => {
   console.log('[🔍 LOGIN USER]', user.toJSON());
 
   req.session.userId = user.id;
-  res.json({ success: true, whatsappUserId: user.whatsappUserId });
+  res.json({
+    success: true,
+    userId: user.id,
+    login: user.login
+  });
 });
 
 
