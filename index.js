@@ -191,16 +191,59 @@ io.on('connection', (socket) => {
     }
   
     const clientKey = String(userId);
+    let client = clients[clientKey];
   
-    if (clients[clientKey]) {
+    // === ✅ Клиент уже существует ===
+    if (client) {
       console.log(`[ℹ️] Клиент уже существует для userId=${clientKey}`);
       sessions[socket.id] = clientKey;
+  
+      // 👇 Повторно подписываем на события для текущего сокета
+      client.on('qr', async (qr) => {
+        const qrImage = await qrcode.toDataURL(qr);
+        socket.emit('qr', { userId: clientKey, qr: qrImage });
+        console.log(`[🧾] QR-код повторно отправлен для userId=${clientKey}`);
+      });
+  
+      client.on('ready', async () => {
+        console.log(`[✅] WA-клиент готов (повторно): userId=${clientKey}`);
+        try {
+          await waitForStore(client);
+          const chats = await client.getChats();
+          const simplified = chats.map(chat => ({
+            id: chat.id._serialized,
+            name: chat.name || chat.id.user || 'Unnamed Chat',
+            avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+            lastMessage: chat.lastMessage?.body || ''
+          }));
+          socket.emit('ready', { userId: clientKey });
+          socket.emit('chats', simplified);
+        } catch (e) {
+          console.error(`[❌] Ошибка при ready (повторно) для userId=${clientKey}:`, e.message);
+        }
+      });
+  
+      client.on('message', (msg) => {
+        const from = msg.from;
+        if (!chatHistories[from]) chatHistories[from] = [];
+        chatHistories[from].push({
+          id: msg.id,
+          body: msg.body,
+          fromMe: msg.fromMe,
+          timestamp: msg.timestamp,
+          notifyName: msg._data?.notifyName || '',
+          author: msg.id.participant || msg.author || msg.from
+        });
+        socket.emit('message', msg);
+      });
+  
       return;
     }
   
+    // === 🚀 Инициализация нового клиента ===
     console.log(`[🚀] Инициализация клиента WhatsApp для userId=${clientKey}`);
   
-    const client = new Client({
+    client = new Client({
       authStrategy: new LocalAuth({ clientId: clientKey }),
       puppeteer: {
         headless: true,
@@ -249,7 +292,6 @@ io.on('connection', (socket) => {
       socket.emit('message', msg);
     });
   });
-  
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
     const userId = sessions[socket.id];
