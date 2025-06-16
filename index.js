@@ -158,69 +158,66 @@ async function waitForStore(client, timeout = 10000) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('start-session', async (data) => {
-    const userId = data?.userId || uuidv4();
+  socket.on('start-session', async () => {
+    const expressSessionUserId = socket.handshake.session?.userId;
   
-    console.log(`[🔄] start-session запущен для socket.id = ${socket.id}`);
+    if (!expressSessionUserId) {
+      console.warn('[⚠️] start-session: немає session.userId');
+      return;
+    }
+  
+    const user = await User.findByPk(expressSessionUserId);
+    if (!user) {
+      console.warn('[⚠️] start-session: юзер не знайдений');
+      return;
+    }
+  
+    let whatsappUserId = user.whatsappUserId;
+  
+    // 🔧 Якщо ще не згенеровано — створюємо й зберігаємо
+    if (!whatsappUserId) {
+      whatsappUserId = uuidv4();
+      await User.update({ whatsappUserId }, { where: { id: user.id } });
+      console.log(`[🆕] Збережено whatsappUserId для юзера #${user.id}: ${whatsappUserId}`);
+    }
+  
+    console.log(`[🚀] Ініціалізація WhatsApp для: ${whatsappUserId}`);
+  
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: userId }),
+      authStrategy: new LocalAuth({ clientId: whatsappUserId }),
       puppeteer: {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
       }
     });
-
-    clients[userId] = client;
-    sessions[socket.id] = userId;
-
+  
+    clients[whatsappUserId] = client;
+    sessions[socket.id] = whatsappUserId;
+  
     client.initialize();
-    console.log(`[🚀] client.initialize вызван для ${userId}`);
-
+  
     client.on('qr', async (qr) => {
       const qrImage = await qrcode.toDataURL(qr);
-      socket.emit('qr', { userId, qr: qrImage });
-      console.log(`[🧾] QR-код сгенерирован для ${userId}`);
+      socket.emit('qr', { userId: whatsappUserId, qr: qrImage });
+      console.log(`[🧾] QR-код сгенерирован для ${whatsappUserId}`);
     });
-
-    
-    
+  
     client.on('ready', async () => {
-      console.log(`[✅] Клиент готов после *старта новой сессии* ${userId}`);
-      console.log('[✅] Клиент готов, session:', socket.handshake.session);
-      const expressSessionUserId = socket.handshake.session?.userId;
-      console.log('[ℹ️] expressSessionUserId from socket session:', expressSessionUserId);
-    
-      if (expressSessionUserId) {
-        const [updatedCount] = await User.update(
-          { whatsappUserId: userId },
-          { where: { id: expressSessionUserId } }
-        );
-        console.log('[📝] Обновлено пользователей:', updatedCount);
-      } else {
-        console.warn('[⚠️] Нет expressSessionUserId — не обновляем whatsappUserId');
-      }
-      try {
-        // 🕒 Подождать, пока Store действительно доступен
-        await waitForStore(client);
-        
-        const chats = await client.getChats();
-        const simplified = chats.map(chat => ({
-          id: chat.id._serialized,
-          name: chat.name || chat.id.user || 'Unnamed Chat',
-          avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-          lastMessage: chat.lastMessage?.body || ''
-        }));
-    
-        socket.emit('ready', { userId });
-        socket.emit('chats', simplified);
-    
-      } catch (err) {
-        console.error(`❌ Ошибка при получении чатов: ${err.message}`);
-      }
+      console.log(`[✅] WA-клієнт готовий: ${whatsappUserId}`);
+      await waitForStore(client);
+  
+      const chats = await client.getChats();
+      const simplified = chats.map(chat => ({
+        id: chat.id._serialized,
+        name: chat.name || chat.id.user || 'Unnamed Chat',
+        avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+        lastMessage: chat.lastMessage?.body || ''
+      }));
+  
+      socket.emit('ready', { userId: whatsappUserId });
+      socket.emit('chats', simplified);
     });
-    
-    
-
+  
     client.on('message', (msg) => {
       const from = msg.from;
       if (!chatHistories[from]) chatHistories[from] = [];
@@ -234,23 +231,8 @@ io.on('connection', (socket) => {
       });
       socket.emit('message', msg);
     });
-    // socket.on('logout', async ({ userId }) => {
-    //   const client = clients[userId];
-    //   if (client) {
-    //     try {
-    //       await client.logout();
-    //       if (client.pupBrowser) {
-    //         await client.destroy();
-    //       }
-    //       delete clients[userId];
-    //     } catch (e) {
-    //       console.warn(`⚠️ logout error: ${e.message}`);
-    //     }
-    //   }
-    //   socket.emit('logged-out', userId);
-    // });
-    
   });
+  
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
     const userId = sessions[socket.id];
