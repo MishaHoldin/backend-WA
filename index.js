@@ -158,26 +158,17 @@ async function waitForStore(client, timeout = 10000) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('start-session', async () => {
-    const expressSessionUserId = socket.handshake.session?.userId;
-  
-    if (!expressSessionUserId) {
-      console.warn('[⚠️] start-session: нет session.userId');
+  socket.on('start-session', async ({ userId, whatsappUserId }) => {
+    if (!userId) {
+      console.warn('[⚠️] start-session: не передан userId');
       return;
     }
-  
-    const user = await User.findByPk(expressSessionUserId);
-    if (!user) {
-      console.warn('[⚠️] start-session: пользователь не найден');
-      return;
-    }
-  
-    let whatsappUserId = user.whatsappUserId;
   
     if (!whatsappUserId) {
+      // Генерируем новый whatsappUserId и обновляем БД
       whatsappUserId = uuidv4();
-      await User.update({ whatsappUserId }, { where: { id: user.id } });
-      console.log(`[🆕] Сгенерирован новый whatsappUserId для user #${user.id}: ${whatsappUserId}`);
+      await User.update({ whatsappUserId }, { where: { id: userId } });
+      console.log(`[🆕] Сгенерирован новый whatsappUserId для user #${userId}: ${whatsappUserId}`);
     }
   
     // если клиент уже инициализирован — не пересоздаем
@@ -238,7 +229,6 @@ io.on('connection', (socket) => {
       socket.emit('message', msg);
     });
   });
-  
   
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
