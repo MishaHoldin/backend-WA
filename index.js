@@ -158,49 +158,66 @@ async function waitForStore(client, timeout = 10000) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('start-session', async ({ userId, whatsappUserId }) => {
+  socket.on('start-session', async (data) => {
+    if (!data) {
+      console.warn('[⚠️] start-session: параметри не передані');
+      return;
+    }
+    console.log(`data: ${JSON.stringify(data)}`);
+    const { userId, whatsappUserId } = data;
+  
     if (!userId) {
-      console.warn('[⚠️] start-session: не передан userId');
+      console.warn('[⚠️] start-session: немає userId');
       return;
     }
   
-    if (!whatsappUserId) {
-      // Генерируем новый whatsappUserId и обновляем БД
-      whatsappUserId = uuidv4();
-      await User.update({ whatsappUserId }, { where: { id: userId } });
-      console.log(`[🆕] Сгенерирован новый whatsappUserId для user #${userId}: ${whatsappUserId}`);
-    }
+    let realWhatsappUserId = whatsappUserId;
   
-    // если клиент уже инициализирован — не пересоздаем
-    if (clients[whatsappUserId]) {
-      console.log(`[ℹ️] Клиент уже существует для ${whatsappUserId}`);
-      sessions[socket.id] = whatsappUserId;
+    const user = await User.findByPk(userId);
+    if (!user) {
+      console.warn('[⚠️] start-session: користувач не знайдений');
       return;
     }
   
-    console.log(`[🚀] Инициализация клиента WhatsApp для ${whatsappUserId}`);
+    if (!realWhatsappUserId) {
+      if (user.whatsappUserId) {
+        realWhatsappUserId = user.whatsappUserId;
+      } else {
+        realWhatsappUserId = uuidv4();
+        await User.update({ whatsappUserId: realWhatsappUserId }, { where: { id: user.id } });
+        console.log(`[🆕] Збережено whatsappUserId для юзера #${user.id}: ${realWhatsappUserId}`);
+      }
+    }
+  
+    if (clients[realWhatsappUserId]) {
+      console.log(`[ℹ️] Клієнт уже існує для ${realWhatsappUserId}`);
+      sessions[socket.id] = realWhatsappUserId;
+      return;
+    }
+  
+    console.log(`[🚀] Ініціалізація клієнта WhatsApp для ${realWhatsappUserId}`);
   
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: whatsappUserId }),
+      authStrategy: new LocalAuth({ clientId: realWhatsappUserId }),
       puppeteer: {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
       }
     });
   
-    clients[whatsappUserId] = client;
-    sessions[socket.id] = whatsappUserId;
+    clients[realWhatsappUserId] = client;
+    sessions[socket.id] = realWhatsappUserId;
   
     client.initialize();
   
     client.on('qr', async (qr) => {
       const qrImage = await qrcode.toDataURL(qr);
-      socket.emit('qr', { userId: whatsappUserId, qr: qrImage });
-      console.log(`[🧾] QR-код сгенерирован для ${whatsappUserId}`);
+      socket.emit('qr', { userId: realWhatsappUserId, qr: qrImage });
+      console.log(`[🧾] QR-код сгенеровано для ${realWhatsappUserId}`);
     });
   
     client.on('ready', async () => {
-      console.log(`[✅] Клиент готов: ${whatsappUserId}`);
+      console.log(`[✅] WA-клієнт готовий: ${realWhatsappUserId}`);
       await waitForStore(client);
   
       const chats = await client.getChats();
@@ -211,7 +228,7 @@ io.on('connection', (socket) => {
         lastMessage: chat.lastMessage?.body || ''
       }));
   
-      socket.emit('ready', { userId: whatsappUserId });
+      socket.emit('ready', { userId: realWhatsappUserId });
       socket.emit('chats', simplified);
     });
   
@@ -229,6 +246,7 @@ io.on('connection', (socket) => {
       socket.emit('message', msg);
     });
   });
+  
   
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
