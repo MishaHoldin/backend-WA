@@ -162,26 +162,32 @@ io.on('connection', (socket) => {
     const expressSessionUserId = socket.handshake.session?.userId;
   
     if (!expressSessionUserId) {
-      console.warn('[⚠️] start-session: немає session.userId');
+      console.warn('[⚠️] start-session: нет session.userId');
       return;
     }
   
     const user = await User.findByPk(expressSessionUserId);
     if (!user) {
-      console.warn('[⚠️] start-session: юзер не знайдений');
+      console.warn('[⚠️] start-session: пользователь не найден');
       return;
     }
   
     let whatsappUserId = user.whatsappUserId;
   
-    // 🔧 Якщо ще не згенеровано — створюємо й зберігаємо
     if (!whatsappUserId) {
       whatsappUserId = uuidv4();
       await User.update({ whatsappUserId }, { where: { id: user.id } });
-      console.log(`[🆕] Збережено whatsappUserId для юзера #${user.id}: ${whatsappUserId}`);
+      console.log(`[🆕] Сгенерирован новый whatsappUserId для user #${user.id}: ${whatsappUserId}`);
     }
   
-    console.log(`[🚀] Ініціалізація WhatsApp для: ${whatsappUserId}`);
+    // если клиент уже инициализирован — не пересоздаем
+    if (clients[whatsappUserId]) {
+      console.log(`[ℹ️] Клиент уже существует для ${whatsappUserId}`);
+      sessions[socket.id] = whatsappUserId;
+      return;
+    }
+  
+    console.log(`[🚀] Инициализация клиента WhatsApp для ${whatsappUserId}`);
   
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: whatsappUserId }),
@@ -203,7 +209,7 @@ io.on('connection', (socket) => {
     });
   
     client.on('ready', async () => {
-      console.log(`[✅] WA-клієнт готовий: ${whatsappUserId}`);
+      console.log(`[✅] Клиент готов: ${whatsappUserId}`);
       await waitForStore(client);
   
       const chats = await client.getChats();
@@ -232,6 +238,7 @@ io.on('connection', (socket) => {
       socket.emit('message', msg);
     });
   });
+  
   
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
