@@ -348,8 +348,8 @@ io.on('connection', (socket) => {
       if (!client) return;
   
       const lidSerialized = author?._serialized;
-      if (!lidSerialized) {
-        console.warn('❌ Отсутствует author._serialized');
+      if (!lidSerialized || !lidSerialized.endsWith('@lid')) {
+        console.warn('❌ Автор не является lid:', lidSerialized);
         return;
       }
   
@@ -367,56 +367,36 @@ io.on('connection', (socket) => {
         return;
       }
   
-      let realCUsId = null;
-
-  
-      // === 🧠 Обработка разных типов авторов ===
-      if (lidSerialized.endsWith('@lid')) {
-        const page = client.pupPage;
-        realCUsId = await page.evaluate(async (lid) => {
-          try {
-            const storeReady = () =>
-              new Promise((resolve) => {
-                if (window.Store?.Contact) return resolve();
-                webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
-                  for (let m in req.c) {
-                    try {
-                      const mod = req(m);
-                      if (mod?.default?.getContact) {
-                        window.Store = window.Store || {};
-                        window.Store.Contact = mod.default;
-                        break;
-                      }
-                    } catch (e) {}
+      const page = client.pupPage;
+      const realCUsId = await page.evaluate(async (lid) => {
+        try {
+          const storeReady = () => new Promise((resolve) => {
+            if (window.Store?.Contact) return resolve();
+            webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
+              for (let m in req.c) {
+                try {
+                  const mod = req(m);
+                  if (mod?.default?.getContact) {
+                    window.Store = window.Store || {};
+                    window.Store.Contact = mod.default;
+                    break;
                   }
-                  resolve();
-                }]);
-              });
-            await storeReady();
-            const contact = window.Store.Contact.get(lid);
-            const phone = contact?.phoneNumber;
-            return phone ? `${phone}` : null;
-          } catch {
-            return null;
-          }
-        }, lidSerialized);
-  
-        if (realCUsId) {
-          realCUsId += '@c.us';
+                } catch (e) {}
+              }
+              resolve();
+            }]);
+          });
+          await storeReady();
+          const contact = window.Store.Contact.get(lid);
+          const phone = contact?.phoneNumber;
+          return phone ? `${phone}` : null;
+        } catch {
+          return null;
         }
-  
-      } else if (lidSerialized.endsWith('@c.us')) {
-        realCUsId = lidSerialized;
-  
-      } else {
-        const digitsOnly = lidSerialized.replace(/\D/g, '');
-        if (digitsOnly.length >= 10) {
-          realCUsId = `${digitsOnly}@c.us`;
-        }
-      }
+      }, lidSerialized);
   
       if (!realCUsId) {
-        console.warn('❌ Не удалось получить realCUsId:', lidSerialized);
+        console.warn('❌ Не удалось получить c.us ID');
         return;
       }
   
@@ -436,7 +416,6 @@ io.on('connection', (socket) => {
       console.error('❌ Ошибка в quick-reply:', err.message);
     }
   });
-  
   
   socket.on("load-chat-by-lid", async ({ chatId, lid, sendUserText }) => {
     try {
