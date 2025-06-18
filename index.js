@@ -348,55 +348,62 @@ io.on('connection', (socket) => {
       if (!client) return;
   
       const lidSerialized = author?._serialized;
-      if (!lidSerialized || !lidSerialized.endsWith('@lid')) {
-        console.warn('❌ Автор не является lid:', lidSerialized);
-        return;
-      }
   
-      const chat = await client.getChatById(chatId);
-      const messages = await chat.fetchMessages({ limit: 100 });
+      let realCUsId = null;
   
-      const targetMsg = messages.find((msg) => {
-        const participant = msg.id?.participant?._serialized;
-        const body = msg.body?.trim();
-        return participant === lidSerialized && (!sendUserText || body === sendUserText.trim());
-      });
+      if (lidSerialized?.endsWith('@c.us')) {
+        // Уже правильный формат
+        realCUsId = lidSerialized;
+      } else if (lidSerialized?.endsWith('@lid')) {
+        // Нужно конвертировать
+        const chat = await client.getChatById(chatId);
+        const messages = await chat.fetchMessages({ limit: 100 });
   
-      if (!targetMsg) {
-        console.warn(`❌ Не найдено сообщение от ${lidSerialized} с текстом "${sendUserText}"`);
-        return;
-      }
+        const targetMsg = messages.find((msg) => {
+          const participant = msg.id?.participant?._serialized;
+          const body = msg.body?.trim();
+          return participant === lidSerialized && (!sendUserText || body === sendUserText.trim());
+        });
   
-      const page = client.pupPage;
-      const realCUsId = await page.evaluate(async (lid) => {
-        try {
-          const storeReady = () => new Promise((resolve) => {
-            if (window.Store?.Contact) return resolve();
-            webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
-              for (let m in req.c) {
-                try {
-                  const mod = req(m);
-                  if (mod?.default?.getContact) {
-                    window.Store = window.Store || {};
-                    window.Store.Contact = mod.default;
-                    break;
-                  }
-                } catch (e) {}
-              }
-              resolve();
-            }]);
-          });
-          await storeReady();
-          const contact = window.Store.Contact.get(lid);
-          const phone = contact?.phoneNumber;
-          return phone ? `${phone}` : null;
-        } catch {
-          return null;
+        if (!targetMsg) {
+          console.warn(`❌ Не найдено сообщение от ${lidSerialized} с текстом "${sendUserText}"`);
+          return;
         }
-      }, lidSerialized);
   
-      if (!realCUsId) {
-        console.warn('❌ Не удалось получить c.us ID');
+        const page = client.pupPage;
+        realCUsId = await page.evaluate(async (lid) => {
+          try {
+            const storeReady = () => new Promise((resolve) => {
+              if (window.Store?.Contact) return resolve();
+              webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
+                for (let m in req.c) {
+                  try {
+                    const mod = req(m);
+                    if (mod?.default?.getContact) {
+                      window.Store = window.Store || {};
+                      window.Store.Contact = mod.default;
+                      break;
+                    }
+                  } catch (e) {}
+                }
+                resolve();
+              }]);
+            });
+            await storeReady();
+            const contact = window.Store.Contact.get(lid);
+            const phone = contact?.phoneNumber;
+            return phone ? `${phone}@c.us` : null;
+          } catch {
+            return null;
+          }
+        }, lidSerialized);
+  
+        if (!realCUsId) {
+          console.warn('❌ Не удалось получить c.us ID');
+          return;
+        }
+      } else {
+        console.warn('❌ Неизвестный формат ID:', lidSerialized);
         return;
       }
   
@@ -406,7 +413,7 @@ io.on('connection', (socket) => {
         await client.sendMessage(realCUsId, mediaToSend, {
           caption: media.caption || text
         });
-        console.log(`📤 Медиа с подпиcью отправлено на ${realCUsId}`);
+        console.log(`📤 Медиа с подписью отправлено на ${realCUsId}`);
       } else {
         await client.sendMessage(realCUsId, text);
         console.log(`📤 Текст отправлен на ${realCUsId}`);
@@ -416,6 +423,7 @@ io.on('connection', (socket) => {
       console.error('❌ Ошибка в quick-reply:', err.message);
     }
   });
+  
   
   socket.on("load-chat-by-lid", async ({ chatId, lid, sendUserText }) => {
     try {
