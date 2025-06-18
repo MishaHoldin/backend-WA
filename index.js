@@ -367,7 +367,8 @@ io.on('connection', (socket) => {
         return;
       }
   
-      let realCUsId: string | null = null;
+      let realCUsId = null;
+
   
       // === 🧠 Обработка разных типов авторов ===
       if (lidSerialized.endsWith('@lid')) {
