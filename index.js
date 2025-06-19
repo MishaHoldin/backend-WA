@@ -74,6 +74,28 @@ function addRepliedId(messageId) {
     fs.writeFileSync(REPLIED_PATH, JSON.stringify(ids, null, 2));
   }
 }
+function normalizeChatId(rawId) {
+  if (!rawId) return null;
+
+  // Если это уже @lid
+  if (rawId.endsWith('@lid')) {
+    return { type: 'lid', id: rawId };
+  }
+
+  // Если это уже @c.us
+  if (rawId.endsWith('@c.us')) {
+    return { type: 'c.us', id: rawId };
+  }
+
+  // Попытка нормализовать номер телефона в формате +380...
+  const digits = rawId.replace(/\D/g, ''); // удаляем все нецифровые символы
+  if (digits.length >= 10) {
+    return { type: 'c.us', id: `${digits}@c.us` };
+  }
+
+  // Не удалось распознать формат
+  return null;
+}
 
 app.post('/api/login', async (req, res) => {
   const { login, password } = req.body;
@@ -347,75 +369,87 @@ io.on('connection', (socket) => {
       const client = clients[userId];
       if (!client) return;
   
-      const lidSerialized = author?._serialized;
-      if (!lidSerialized || !lidSerialized.endsWith('@lid')) {
-        console.warn('❌ Автор не является lid:', lidSerialized);
+      const parsedAuthor = normalizeChatId(author?._serialized || author);
+  
+      if (!parsedAuthor) {
+        console.warn('❌ Не удалось распознать автора:', author);
         return;
       }
   
-      const chat = await client.getChatById(chatId);
-      const messages = await chat.fetchMessages({ limit: 100 });
+      let realChatId;
   
-      const targetMsg = messages.find((msg) => {
-        const participant = msg.id?.participant?._serialized;
-        const body = msg.body?.trim();
-        return participant === lidSerialized && (!sendUserText || body === sendUserText.trim());
-      });
+      if (parsedAuthor.type === 'lid') {
+        const chat = await client.getChatById(chatId);
+        const messages = await chat.fetchMessages({ limit: 100 });
   
-      if (!targetMsg) {
-        console.warn(`❌ Не найдено сообщение от ${lidSerialized} с текстом "${sendUserText}"`);
-        return;
-      }
+        const targetMsg = messages.find((msg) => {
+          const participant = msg.id?.participant?._serialized;
+          const body = msg.body?.trim();
+          return participant === parsedAuthor.id && (!sendUserText || body === sendUserText.trim());
+        });
   
-      const page = client.pupPage;
-      const realCUsId = await page.evaluate(async (lid) => {
-        try {
-          const storeReady = () => new Promise((resolve) => {
-            if (window.Store?.Contact) return resolve();
-            webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
-              for (let m in req.c) {
-                try {
-                  const mod = req(m);
-                  if (mod?.default?.getContact) {
-                    window.Store = window.Store || {};
-                    window.Store.Contact = mod.default;
-                    break;
-                  }
-                } catch (e) {}
-              }
-              resolve();
-            }]);
-          });
-          await storeReady();
-          const contact = window.Store.Contact.get(lid);
-          const phone = contact?.phoneNumber;
-          return phone ? `${phone}` : null;
-        } catch {
-          return null;
+        if (!targetMsg) {
+          console.warn(`❌ Не найдено сообщение от ${parsedAuthor.id} с текстом "${sendUserText}"`);
+          return;
         }
-      }, lidSerialized);
   
-      if (!realCUsId) {
-        console.warn('❌ Не удалось получить c.us ID');
-        return;
+        const page = client.pupPage;
+        const realCUsId = await page.evaluate(async (lid) => {
+          try {
+            const storeReady = () => new Promise((resolve) => {
+              if (window.Store?.Contact) return resolve();
+              webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
+                for (let m in req.c) {
+                  try {
+                    const mod = req(m);
+                    if (mod?.default?.getContact) {
+                      window.Store = window.Store || {};
+                      window.Store.Contact = mod.default;
+                      break;
+                    }
+                  } catch (e) {}
+                }
+                resolve();
+              }]);
+            });
+            await storeReady();
+            const contact = window.Store.Contact.get(lid);
+            const phone = contact?.phoneNumber;
+            return phone ? `${phone}@c.us` : null;
+          } catch {
+            return null;
+          }
+        }, parsedAuthor.id);
+  
+        if (!realCUsId) {
+          console.warn('❌ Не удалось получить c.us ID');
+          return;
+        }
+  
+        realChatId = realCUsId;
+  
+      } else {
+        // Для c.us и нормализованных номеров
+        realChatId = parsedAuthor.id;
       }
   
-      // === 📎 Отправка медиа, если есть ===
+      // === 📎 Отправка медиа или текста ===
       if (media?.base64 && media?.mimeType) {
         const mediaToSend = new MessageMedia(media.mimeType, media.base64);
-        await client.sendMessage(realCUsId, mediaToSend, {
+        await client.sendMessage(realChatId, mediaToSend, {
           caption: media.caption || text
         });
-        console.log(`📤 Медиа с подпиcью отправлено на ${realCUsId}`);
+        console.log(`📤 Медиа отправлено на ${realChatId}`);
       } else {
-        await client.sendMessage(realCUsId, text);
-        console.log(`📤 Текст отправлен на ${realCUsId}`);
+        await client.sendMessage(realChatId, text);
+        console.log(`📤 Текст отправлен на ${realChatId}`);
       }
   
     } catch (err) {
       console.error('❌ Ошибка в quick-reply:', err.message);
     }
   });
+  
   
   socket.on("load-chat-by-lid", async ({ chatId, lid, sendUserText }) => {
     try {
