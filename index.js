@@ -415,7 +415,7 @@ io.on('connection', (socket) => {
             await storeReady();
             const contact = window.Store.Contact.get(lid);
             const phone = contact?.phoneNumber;
-            return phone ? `${phone}@c.us` : null;
+            return phone ? `${phone}` : null;
           } catch {
             return null;
           }
