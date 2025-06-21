@@ -203,8 +203,7 @@ io.on('connection', (socket) => {
   });
   
   socket.on('start-session', async ({ userId, tabId }) => {
-    socketTabSessions[socket.id] = { userId, tabId, socketId: socket.id };
-    console.log('[✅] Start session:', socketTabSessions[socket.id]);
+    socketTabSessions[socket.id] = { userId, tabId };
     if (!userId) {
       console.warn('[⚠️] start-session: userId не передан');
       return;
@@ -328,29 +327,17 @@ io.on('connection', (socket) => {
     });
   });
   
-  socket.on('get-relevant-messages', async ({ chatIds, tabId }) => {
-    const session = Object.values(socketTabSessions).find(
-      (s) => s.tabId === tabId && s.socketId === socket.id
-    );
-  
-    if (!session) {
-      console.warn(`[❌] Session not found for tabId: ${tabId}`);
-      return;
-    }
-  
-    const client = clients[session.userId];
-    if (!client) {
-      console.warn(`[❌] Client not found for userId: ${session.userId}`);
-      return;
-    }
-  
+  socket.on('get-relevant-messages', async ({ chatIds }) => {
+    const userId = socketTabSessions[socket.id]?.userId;
+    const client = clients[userId];
+    if (!client) return;
     const result = [];
   
     for (const chatId of chatIds) {
       let chat;
       try {
         chat = await client.getChatById(chatId);
-        if (!chat?.id?._serialized) continue;
+        if (!chat || !chat.id || !chat.id._serialized) continue;
       } catch (e) {
         console.error(`[❌] getChatById failed for ${chatId}:`, e.message);
         continue;
@@ -365,12 +352,10 @@ io.on('connection', (socket) => {
       }
   
       const repliedIds = getRepliedIds();
-  
       for (const msg of messages) {
         const rawText = msg.body || '';
         if (!rawText || typeof rawText !== 'string') continue;
         if (repliedIds.includes(msg.id._serialized)) continue;
-  
         result.push({
           id: msg.id?._serialized || '',
           chatId,
@@ -387,14 +372,8 @@ io.on('connection', (socket) => {
     }
   
     result.sort((a, b) => b.timestamp - a.timestamp);
-  
-    socket.emit('relevant-messages', {
-      tabId,
-      messages: result
-    });
+    socket.emit('relevant-messages', result);
   });
-  
-  
   
   socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author, media }) => {
     try {
@@ -705,27 +684,80 @@ io.on('connection', (socket) => {
     }
   });
   socket.on('restore-session', async ({ userId, tabId }) => {
-    console.log('[♻️] Restore session:', { userId, tabId, socketId: socket.id });
-  
-    // Сохраняем в socketTabSessions
-    socketTabSessions[socket.id] = { userId, tabId, socketId: socket.id };
-  
-    const clientKey = userId.toString();
-    const sessionPath = `.wwebjs_auth/session-${clientKey}`;
-  
-    if (!clients[clientKey]) {
+    const clientKey = String(userId);
+    let client = clients[clientKey];
+    socketTabSessions[socket.id] = { userId, tabId };
+    if (!client) {
+      const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
+      
       if (fs.existsSync(sessionPath)) {
-        console.log(`[✅] Session exists on disk, restoring for userId=${clientKey}`);
-        startSession({ userId: clientKey, socket, tabId }); // 👈 tabId обязательно
+        client = new Client({
+          authStrategy: new LocalAuth({ clientId: clientKey }),
+          puppeteer: {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+          }
+        });
+  
+        clients[clientKey] = client;
+        sessions[socket.id] = clientKey;
+  
+        client.initialize();
+  
+        client.on('ready', async () => {
+          console.log(`[✅] Клиент восстановлен: userId=${clientKey}`);
+          try {
+            await waitForStore(client);
+            const chats = await client.getChats();
+            const simplified = chats.map(chat => ({
+              id: chat.id._serialized,
+              name: chat.name || chat.id.user || 'Unnamed Chat',
+              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+              lastMessage: chat.lastMessage?.body || ''
+            }));
+  
+            socket.emit('ready', { userId: clientKey });
+            socket.emit('chats', simplified);
+          } catch (err) {
+            console.error(`❌ Ошибка при восстановлении клиента для ${clientKey}: ${err.message}`);
+            socket.emit('error', { message: 'Не удалось загрузить чаты. Попробуйте позже.' });
+          }
+        });
+  
+        client.on('message', (msg) => {
+          const from = msg.from;
+          if (!chatHistories[from]) chatHistories[from] = [];
+          chatHistories[from].push({
+            id: msg.id,
+            body: msg.body,
+            fromMe: msg.fromMe,
+            timestamp: msg.timestamp,
+            notifyName: msg._data?.notifyName || '',
+            author: msg.id.participant || msg.author || msg.from
+          });
+          socket.emit('message', msg);
+        });
+  
       } else {
-        console.log(`[⚠️] No session on disk, requesting new session for userId=${clientKey}`);
-        io.to(socket.id).emit('request-start-session', { userId: clientKey }); // 👈 а не startSession()
+        console.log(`[⚠️] Нет сессии на диске для userId=${clientKey}, инициируем start-session`);
+        socket.emit('start-session', { userId: clientKey }); // 👈 важно: передай userId
+        return;
       }
+  
     } else {
-      console.log(`[ℹ️] Session already running for userId=${clientKey}`);
+      sessions[socket.id] = clientKey;
+      const chats = await client.getChats();
+      const simplified = chats.map(chat => ({
+        id: chat.id._serialized,
+        name: chat.name || chat.id.user || 'Unnamed Chat',
+        avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
+        lastMessage: chat.lastMessage?.body || ''
+      }));
+  
+      socket.emit('ready', { userId: clientKey });
+      socket.emit('chats', simplified);
     }
   });
-  
   socket.on('disconnect', () => {
     delete socketTabSessions[socket.id];
   });
