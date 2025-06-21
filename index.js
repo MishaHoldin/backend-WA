@@ -327,17 +327,29 @@ io.on('connection', (socket) => {
     });
   });
   
-  socket.on('get-relevant-messages', async ({ chatIds }) => {
-    const userId = socketTabSessions[socket.id]?.userId;
-    const client = clients[userId];
-    if (!client) return;
+  socket.on('get-relevant-messages', async ({ chatIds, tabId }) => {
+    const session = Object.values(socketTabSessions).find(
+      (s) => s.tabId === tabId && s.socketId === socket.id
+    );
+  
+    if (!session) {
+      console.warn(`[❌] Session not found for tabId: ${tabId}`);
+      return;
+    }
+  
+    const client = clients[session.userId];
+    if (!client) {
+      console.warn(`[❌] Client not found for userId: ${session.userId}`);
+      return;
+    }
+  
     const result = [];
   
     for (const chatId of chatIds) {
       let chat;
       try {
         chat = await client.getChatById(chatId);
-        if (!chat || !chat.id || !chat.id._serialized) continue;
+        if (!chat?.id?._serialized) continue;
       } catch (e) {
         console.error(`[❌] getChatById failed for ${chatId}:`, e.message);
         continue;
@@ -352,10 +364,12 @@ io.on('connection', (socket) => {
       }
   
       const repliedIds = getRepliedIds();
+  
       for (const msg of messages) {
         const rawText = msg.body || '';
         if (!rawText || typeof rawText !== 'string') continue;
         if (repliedIds.includes(msg.id._serialized)) continue;
+  
         result.push({
           id: msg.id?._serialized || '',
           chatId,
@@ -372,8 +386,14 @@ io.on('connection', (socket) => {
     }
   
     result.sort((a, b) => b.timestamp - a.timestamp);
-    socket.emit('relevant-messages', result);
+  
+    socket.emit('relevant-messages', {
+      tabId,
+      messages: result
+    });
   });
+  
+  
   
   socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author, media }) => {
     try {
