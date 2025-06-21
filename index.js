@@ -705,82 +705,27 @@ io.on('connection', (socket) => {
     }
   });
   socket.on('restore-session', async ({ userId, tabId }) => {
-    const clientKey = String(userId);
+    console.log('[♻️] Restore session:', { userId, tabId, socketId: socket.id });
+  
+    // Сохраняем в socketTabSessions
     socketTabSessions[socket.id] = { userId, tabId, socketId: socket.id };
-    console.log('[♻️] Restore session:', socketTabSessions[socket.id]);
-    let client = clients[clientKey];
-    socketTabSessions[socket.id] = { userId, tabId };
-    if (!client) {
-      const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
-      
+  
+    const clientKey = userId.toString();
+    const sessionPath = `.wwebjs_auth/session-${clientKey}`;
+  
+    if (!clients[clientKey]) {
       if (fs.existsSync(sessionPath)) {
-        client = new Client({
-          authStrategy: new LocalAuth({ clientId: clientKey }),
-          puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-          }
-        });
-  
-        clients[clientKey] = client;
-        sessions[socket.id] = clientKey;
-  
-        client.initialize();
-  
-        client.on('ready', async () => {
-          console.log(`[✅] Клиент восстановлен: userId=${clientKey}`);
-          try {
-            await waitForStore(client);
-            const chats = await client.getChats();
-            const simplified = chats.map(chat => ({
-              id: chat.id._serialized,
-              name: chat.name || chat.id.user || 'Unnamed Chat',
-              avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-              lastMessage: chat.lastMessage?.body || ''
-            }));
-  
-            socket.emit('ready', { userId: clientKey });
-            socket.emit('chats', simplified);
-          } catch (err) {
-            console.error(`❌ Ошибка при восстановлении клиента для ${clientKey}: ${err.message}`);
-            socket.emit('error', { message: 'Не удалось загрузить чаты. Попробуйте позже.' });
-          }
-        });
-  
-        client.on('message', (msg) => {
-          const from = msg.from;
-          if (!chatHistories[from]) chatHistories[from] = [];
-          chatHistories[from].push({
-            id: msg.id,
-            body: msg.body,
-            fromMe: msg.fromMe,
-            timestamp: msg.timestamp,
-            notifyName: msg._data?.notifyName || '',
-            author: msg.id.participant || msg.author || msg.from
-          });
-          socket.emit('message', msg);
-        });
-  
+        console.log(`[✅] Session exists on disk, restoring for userId=${clientKey}`);
+        startSession({ userId: clientKey, socket, tabId }); // 👈 tabId обязательно
       } else {
-        console.log(`[⚠️] Нет сессии на диске для userId=${clientKey}, инициируем start-session`);
-        socket.emit('start-session', { userId: clientKey }); // 👈 важно: передай userId
-        return;
+        console.log(`[⚠️] No session on disk, requesting new session for userId=${clientKey}`);
+        io.to(socket.id).emit('request-start-session', { userId: clientKey }); // 👈 а не startSession()
       }
-  
     } else {
-      sessions[socket.id] = clientKey;
-      const chats = await client.getChats();
-      const simplified = chats.map(chat => ({
-        id: chat.id._serialized,
-        name: chat.name || chat.id.user || 'Unnamed Chat',
-        avatar: chat.id.user ? `https://ui-avatars.com/api/?name=${chat.name || chat.id.user}` : '',
-        lastMessage: chat.lastMessage?.body || ''
-      }));
-  
-      socket.emit('ready', { userId: clientKey });
-      socket.emit('chats', simplified);
+      console.log(`[ℹ️] Session already running for userId=${clientKey}`);
     }
   });
+  
   socket.on('disconnect', () => {
     delete socketTabSessions[socket.id];
   });
