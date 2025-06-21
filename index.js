@@ -55,6 +55,7 @@ let isClientReady = false;
 const REPLIED_PATH = path.join(__dirname, 'repliedMessages.json');
 const clients = {};
 const sessions = {};
+const socketTabSessions = {};
 const chatHistories = {} // для історії
 
 function getRepliedIds() {
@@ -184,7 +185,8 @@ async function waitForStore(client, timeout = 10000) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('check-session', ({ userId }) => {
+  socket.on('check-session', ({ userId, tabId }) => {
+    socketTabSessions[socket.id] = { userId, tabId };
     const client = clients[String(userId)];
     if (!client) {
       socket.emit('session-status', { ready: false, hasQR: false });
@@ -200,7 +202,8 @@ io.on('connection', (socket) => {
     });
   });
   
-  socket.on('start-session', async ({ userId }) => {
+  socket.on('start-session', async ({ userId, tabId }) => {
+    socketTabSessions[socket.id] = { userId, tabId };
     if (!userId) {
       console.warn('[⚠️] start-session: userId не передан');
       return;
@@ -245,19 +248,28 @@ io.on('connection', (socket) => {
         }
       });
   
-      client.on('message', (msg) => {
-        const from = msg.from;
-        if (!chatHistories[from]) chatHistories[from] = [];
-        chatHistories[from].push({
-          id: msg.id,
-          body: msg.body,
-          fromMe: msg.fromMe,
-          timestamp: msg.timestamp,
-          notifyName: msg._data?.notifyName || '',
-          author: msg.id.participant || msg.author || msg.from
-        });
-        socket.emit('message', msg);
-      });
+      if (!client.listeners('message').some(l => l._tabScoped)) {
+        client.on('message', (msg) => {
+          const from = msg.from;
+          if (!chatHistories[from]) chatHistories[from] = [];
+          chatHistories[from].push({
+            id: msg.id,
+            body: msg.body,
+            fromMe: msg.fromMe,
+            timestamp: msg.timestamp,
+            notifyName: msg._data?.notifyName || '',
+            author: msg.id.participant || msg.author || msg.from
+          });
+      
+          // 👉 Розсилка ВСІМ сокетам, які пов'язані з цим клієнтом
+          for (const [socketId, session] of Object.entries(socketTabSessions)) {
+            if (session.userId === userId) {
+              io.to(socketId).emit('message', msg);
+            }
+          }
+        })._tabScoped = true;
+      }
+      
   
       return;
     }
@@ -316,7 +328,7 @@ io.on('connection', (socket) => {
   });
   
   socket.on('get-relevant-messages', async ({ chatIds }) => {
-    const userId = sessions[socket.id];
+    const userId = socketTabSessions[socket.id]?.userId;
     const client = clients[userId];
     if (!client) return;
     const result = [];
@@ -365,7 +377,8 @@ io.on('connection', (socket) => {
   
   socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author, media }) => {
     try {
-      const userId = sessions[socket.id];
+      const userId = socketTabSessions[socket.id]?.userId;
+
       const client = clients[userId];
       if (!client) return;
   
@@ -453,7 +466,8 @@ io.on('connection', (socket) => {
   
   socket.on("load-chat-by-lid", async ({ chatId, lid, sendUserText }) => {
     try {
-      const userId = sessions[socket.id];
+      const userId = socketTabSessions[socket.id]?.userId;
+
       const client = clients[userId];
       if (!client) return;
   
@@ -546,7 +560,8 @@ io.on('connection', (socket) => {
   });
   
   socket.on('get-replied-messages', async ({ chatIds }) => {
-    const userId = sessions[socket.id];
+    const userId = socketTabSessions[socket.id]?.userId;
+
     const client = clients[userId];
 
     if (!client) return;
@@ -597,7 +612,7 @@ io.on('connection', (socket) => {
   });
   socket.on('resolve-contact', async ({ lid }, callback) => {
     try {
-      const userId = sessions[socket.id];
+      const userId = socketTabSessions[socket.id]?.userId;
       const client = clients[userId];
       if (!client || !client.pupPage) return callback(null);
   
@@ -641,7 +656,8 @@ io.on('connection', (socket) => {
   
   socket.on("load-chat", async (chatId, authorId) => {
     try {
-      const userId = sessions[socket.id];
+      const userId = socketTabSessions[socket.id]?.userId;
+
       const client = clients[userId];
       if (!client) return;
       const chat = await client.getChatById(chatId);
@@ -667,10 +683,10 @@ io.on('connection', (socket) => {
       console.error("❌ Error loading chat history:", err.message);
     }
   });
-  socket.on('restore-session', async ({ userId }) => {
+  socket.on('restore-session', async ({ userId, tabId }) => {
     const clientKey = String(userId);
     let client = clients[clientKey];
-  
+    socketTabSessions[socket.id] = { userId, tabId };
     if (!client) {
       const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
       
@@ -742,37 +758,10 @@ io.on('connection', (socket) => {
       socket.emit('chats', simplified);
     }
   });
-  
-  // socket.on('logout', async ({ userId }) => {
-  //   const client = clients[userId];
-  //   if (client) {
-  //     try {
-  //       console.log(`[🚪] Логаут для ${userId}`);
-  //       await client.logout();  // Выход из WhatsApp
-  //       await client.destroy(); // Удаление экземпляра
-  
-  //       delete clients[userId];
-  //       Object.keys(sessions).forEach((key) => {
-  //         if (sessions[key] === userId) delete sessions[key];
-  //       });
-  
-  //       // Удаление сессионной папки
-  //       const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${userId}`);
-  //       if (fs.existsSync(sessionPath)) {
-  //         fs.rmSync(sessionPath, { recursive: true, force: true });
-  //         console.log(`[🗑️] Папка сессии удалена: ${sessionPath}`);
-  //       }
-  
-  //       socket.emit('logged-out', userId);
-  //     } catch (e) {
-  //       console.error(`❌ Ошибка при logout для ${userId}:`, e.message);
-  //     }
-  //   } else {
-  //     console.log(`[ℹ️] Клиент не найден при logout для ${userId}`);
-  //     socket.emit('logged-out', userId);
-  //   }
-  // });
-  
+  socket.on('disconnect', () => {
+    delete socketTabSessions[socket.id];
+  });
+    
   if (isClientReady) {
     const userId = sessions[socket.id];
     const client = clients[userId];
