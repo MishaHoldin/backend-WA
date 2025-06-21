@@ -203,7 +203,8 @@ io.on('connection', (socket) => {
   });
   
   socket.on('start-session', async ({ userId, tabId }) => {
-    socketTabSessions[socket.id] = { userId, tabId };
+    socketTabSessions[socket.id] = { userId, tabId, socketId: socket.id };
+    console.log('[✅] Start session:', socketTabSessions[socket.id]);
     if (!userId) {
       console.warn('[⚠️] start-session: userId не передан');
       return;
@@ -705,6 +706,8 @@ io.on('connection', (socket) => {
   });
   socket.on('restore-session', async ({ userId, tabId }) => {
     const clientKey = String(userId);
+    socketTabSessions[socket.id] = { userId, tabId, socketId: socket.id };
+    console.log('[♻️] Restore session:', socketTabSessions[socket.id]);
     let client = clients[clientKey];
     socketTabSessions[socket.id] = { userId, tabId };
     if (!client) {
