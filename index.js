@@ -468,6 +468,10 @@ io.on('connection', (socket) => {
       }
   
       // === 📎 Отправка медиа или текста ===
+      console.log('🧪 media.buffer type:', typeof media.buffer);
+      console.log('🧪 media.buffer instanceof Uint8Array:', media.buffer instanceof Uint8Array);
+      console.log('🧪 media.buffer instanceof ArrayBuffer:', media.buffer instanceof ArrayBuffer);
+
       if (media?.buffer && media?.mimeType) {
         const buffer = Buffer.from(media.buffer);
         const base64 = buffer.toString('base64');
