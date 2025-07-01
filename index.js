@@ -289,7 +289,28 @@ io.on('connection', (socket) => {
     sessions[socket.id] = clientKey;
   
     client.initialize();
-  
+    client.on('disconnected', async (reason) => {
+      console.warn(`[📴] Клиент отключен: userId=${clientKey}, причина: ${reason}`);
+      
+      const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
+      
+      // Удаление повреждённой сессии
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        console.log(`[🧹] Сессия удалена: ${sessionPath}`);
+      }
+    
+      // Удаление клиента из памяти
+      delete clients[clientKey];
+    
+      // Отправка события на фронт
+      for (const [socketId, session] of Object.entries(socketTabSessions)) {
+        if (session.userId === userId) {
+          io.to(socketId).emit('session-disconnected', { userId: clientKey });
+        }
+      }
+    });
+
     client.on('qr', async (qr) => {
       const qrImage = await qrcode.toDataURL(qr);
       socket.emit('qr', { userId: clientKey, qr: qrImage });
@@ -447,8 +468,10 @@ io.on('connection', (socket) => {
       }
   
       // === 📎 Отправка медиа или текста ===
-      if (media?.base64 && media?.mimeType) {
-        const mediaToSend = new MessageMedia(media.mimeType, media.base64);
+      if (media?.buffer && media?.mimeType) {
+        const buffer = Buffer.from(media.buffer);
+        const base64 = buffer.toString('base64');
+        const mediaToSend = new MessageMedia(media.mimeType, base64);
         await client.sendMessage(realChatId, mediaToSend, {
           caption: media.caption || text
         });
@@ -457,9 +480,10 @@ io.on('connection', (socket) => {
         await client.sendMessage(realChatId, text);
         console.log(`📤 Текст отправлен на ${realChatId}`);
       }
+      
   
     } catch (err) {
-      console.error('❌ Ошибка в quick-reply:', err.message);
+      console.error('❌ Ошибка в quick-reply:', err.stack || err.message);
     }
   });
   
@@ -703,7 +727,27 @@ io.on('connection', (socket) => {
         sessions[socket.id] = clientKey;
   
         client.initialize();
-  
+        client.on('disconnected', async (reason) => {
+          console.warn(`[📴] Клиент отключен: userId=${clientKey}, причина: ${reason}`);
+          
+          const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
+          
+          // Удаление повреждённой сессии
+          if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            console.log(`[🧹] Сессия удалена: ${sessionPath}`);
+          }
+        
+          // Удаление клиента из памяти
+          delete clients[clientKey];
+        
+          // Отправка события на фронт
+          for (const [socketId, session] of Object.entries(socketTabSessions)) {
+            if (session.userId === userId) {
+              io.to(socketId).emit('session-disconnected', { userId: clientKey });
+            }
+          }
+        });
         client.on('ready', async () => {
           console.log(`[✅] Клиент восстановлен: userId=${clientKey}`);
           try {
@@ -758,9 +802,9 @@ io.on('connection', (socket) => {
       socket.emit('chats', simplified);
     }
   });
-  socket.on('disconnect', () => {
-    delete socketTabSessions[socket.id];
-  });
+  // socket.on('disconnect', () => {
+  //   delete socketTabSessions[socket.id];
+  // });
     
   if (isClientReady) {
     const userId = sessions[socket.id];
