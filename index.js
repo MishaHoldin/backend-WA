@@ -291,25 +291,40 @@ io.on('connection', (socket) => {
     client.initialize();
     client.on('disconnected', async (reason) => {
       console.warn(`[📴] Клиент отключен: userId=${clientKey}, причина: ${reason}`);
-      
+    
       const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
-      
-      // Удаление повреждённой сессии
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-        console.log(`[🧹] Сессия удалена: ${sessionPath}`);
-      }
     
-      // Удаление клиента из памяти
-      delete clients[clientKey];
+      try {
+        // 🛑 Корректное завершение клиента
+        await client.destroy(); // <-- Ключевой момент
     
-      // Отправка события на фронт
-      for (const [socketId, session] of Object.entries(socketTabSessions)) {
-        if (session.userId === userId) {
-          io.to(socketId).emit('session-disconnected', { userId: clientKey });
-        }
+        // 🕒 Небольшая задержка
+        setTimeout(() => {
+          if (fs.existsSync(sessionPath)) {
+            try {
+              fs.rmSync(sessionPath, { recursive: true, force: true });
+              console.log(`[🧹] Сессия удалена: ${sessionPath}`);
+            } catch (err) {
+              console.error(`[❌] Ошибка при удалении сессии: ${err.message}`);
+            }
+          }
+    
+          // ❌ Удаляем из памяти
+          delete clients[clientKey];
+    
+          // 🔄 Уведомление всех вкладок
+          for (const [socketId, session] of Object.entries(socketTabSessions)) {
+            if (session.userId === userId) {
+              io.to(socketId).emit('session-disconnected', { userId: clientKey });
+            }
+          }
+        }, 1000); // ⏱ задержка 1 секунда
+    
+      } catch (err) {
+        console.error(`[❌] Ошибка при завершении клиента: ${err.message}`);
       }
     });
+    
 
     client.on('qr', async (qr) => {
       const qrImage = await qrcode.toDataURL(qr);
@@ -733,25 +748,40 @@ io.on('connection', (socket) => {
         client.initialize();
         client.on('disconnected', async (reason) => {
           console.warn(`[📴] Клиент отключен: userId=${clientKey}, причина: ${reason}`);
-          
+        
           const sessionPath = path.resolve(__dirname, `.wwebjs_auth/session-${clientKey}`);
-          
-          // Удаление повреждённой сессии
-          if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-            console.log(`[🧹] Сессия удалена: ${sessionPath}`);
-          }
         
-          // Удаление клиента из памяти
-          delete clients[clientKey];
+          try {
+            // 🛑 Корректное завершение клиента
+            await client.destroy(); // <-- Ключевой момент
         
-          // Отправка события на фронт
-          for (const [socketId, session] of Object.entries(socketTabSessions)) {
-            if (session.userId === userId) {
-              io.to(socketId).emit('session-disconnected', { userId: clientKey });
-            }
+            // 🕒 Небольшая задержка
+            setTimeout(() => {
+              if (fs.existsSync(sessionPath)) {
+                try {
+                  fs.rmSync(sessionPath, { recursive: true, force: true });
+                  console.log(`[🧹] Сессия удалена: ${sessionPath}`);
+                } catch (err) {
+                  console.error(`[❌] Ошибка при удалении сессии: ${err.message}`);
+                }
+              }
+        
+              // ❌ Удаляем из памяти
+              delete clients[clientKey];
+        
+              // 🔄 Уведомление всех вкладок
+              for (const [socketId, session] of Object.entries(socketTabSessions)) {
+                if (session.userId === userId) {
+                  io.to(socketId).emit('session-disconnected', { userId: clientKey });
+                }
+              }
+            }, 1000); // ⏱ задержка 1 секунда
+        
+          } catch (err) {
+            console.error(`[❌] Ошибка при завершении клиента: ${err.message}`);
           }
         });
+        
         client.on('ready', async () => {
           console.log(`[✅] Клиент восстановлен: userId=${clientKey}`);
           try {
