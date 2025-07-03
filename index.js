@@ -129,6 +129,22 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/check-auth', (req, res) => {
   res.json({ authenticated: !!req.session.userId });
 });
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' }); // или memoryStorage()
+
+app.post('/api/upload-media', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  
+  const fileInfo = {
+    filename: req.file.filename,
+    path: req.file.path,
+    mimetype: req.file.mimetype,
+    originalname: req.file.originalname,
+  };
+
+  res.json({ success: true, file: fileInfo });
+});
+
 // 📋 Получить всех пользователей
 app.get('/api/users', isAuthenticated, async (req, res) => {
   const users = await User.findAll({ attributes: ['id', 'login'] });
@@ -411,100 +427,114 @@ io.on('connection', (socket) => {
     socket.emit('relevant-messages', result);
   });
   
-  socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author, media }) => {
-    try {
-      const userId = socketTabSessions[socket.id]?.userId;
+socket.on('quick-reply', async ({ chatId, text, sendUserText, repliedToId, author, media }) => {
+  try {
+    const userId = socketTabSessions[socket.id]?.userId;
+    const client = clients[userId];
+    if (!client) return;
 
-      const client = clients[userId];
-      if (!client) return;
-  
-      const parsedAuthor = normalizeChatId(author?._serialized || author);
-  
-      if (!parsedAuthor) {
-        console.warn('❌ Не удалось распознать автора:', author);
+    const parsedAuthor = normalizeChatId(author?._serialized || author);
+    if (!parsedAuthor) {
+      console.warn('❌ Не удалось распознать автора:', author);
+      return;
+    }
+
+    let realChatId;
+
+    if (parsedAuthor.type === 'lid') {
+      const chat = await client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
+
+      const targetMsg = messages.find((msg) => {
+        const participant = msg.id?.participant?._serialized;
+        const body = msg.body?.trim();
+        return participant === parsedAuthor.id && (!sendUserText || body === sendUserText.trim());
+      });
+
+      if (!targetMsg) {
+        console.warn(`❌ Не найдено сообщение от ${parsedAuthor.id} с текстом "${sendUserText}"`);
         return;
       }
-  
-      let realChatId;
-  
-      if (parsedAuthor.type === 'lid') {
-        const chat = await client.getChatById(chatId);
-        const messages = await chat.fetchMessages({ limit: 100 });
-  
-        const targetMsg = messages.find((msg) => {
-          const participant = msg.id?.participant?._serialized;
-          const body = msg.body?.trim();
-          return participant === parsedAuthor.id && (!sendUserText || body === sendUserText.trim());
-        });
-  
-        if (!targetMsg) {
-          console.warn(`❌ Не найдено сообщение от ${parsedAuthor.id} с текстом "${sendUserText}"`);
-          return;
-        }
-  
-        const page = client.pupPage;
-        const realCUsId = await page.evaluate(async (lid) => {
-          try {
-            const storeReady = () => new Promise((resolve) => {
-              if (window.Store?.Contact) return resolve();
-              webpackChunkwhatsapp_web_client.push([['custom'], {}, (req) => {
-                for (let m in req.c) {
-                  try {
-                    const mod = req(m);
-                    if (mod?.default?.getContact) {
-                      window.Store = window.Store || {};
-                      window.Store.Contact = mod.default;
-                      break;
-                    }
-                  } catch (e) {}
-                }
-                resolve();
-              }]);
-            });
-            await storeReady();
-            const contact = window.Store.Contact.get(lid);
-            const phone = contact?.phoneNumber;
-            return phone ? `${phone}` : null;
-          } catch {
-            return null;
-          }
-        }, parsedAuthor.id);
-  
-        if (!realCUsId) {
-          console.warn('❌ Не удалось получить c.us ID');
-          return;
-        }
-  
-        realChatId = realCUsId;
-  
-      } else {
-        // Для c.us и нормализованных номеров
-        realChatId = parsedAuthor.id;
-      }
-  
-      // === 📎 Отправка медиа или текста ===
-      console.log('🧪 media.buffer type:', typeof media.buffer);
-      console.log('🧪 media.buffer instanceof Uint8Array:', media.buffer instanceof Uint8Array);
-      console.log('🧪 media.buffer instanceof ArrayBuffer:', media.buffer instanceof ArrayBuffer);
 
-      if (media?.buffer && media?.mimeType) {
-        const buffer = Buffer.from(media.buffer);
+      const page = client.pupPage;
+      const realCUsId = await page.evaluate(async (lid) => {
+        try {
+          const storeReady = () =>
+            new Promise((resolve) => {
+              if (window.Store?.Contact) return resolve();
+              webpackChunkwhatsapp_web_client.push([
+                ['custom'],
+                {},
+                (req) => {
+                  for (let m in req.c) {
+                    try {
+                      const mod = req(m);
+                      if (mod?.default?.getContact) {
+                        window.Store = window.Store || {};
+                        window.Store.Contact = mod.default;
+                        break;
+                      }
+                    } catch (e) {}
+                  }
+                  resolve();
+                },
+              ]);
+            });
+          await storeReady();
+          const contact = window.Store.Contact.get(lid);
+          const phone = contact?.phoneNumber;
+          return phone ? `${phone}` : null;
+        } catch {
+          return null;
+        }
+      }, parsedAuthor.id);
+
+      if (!realCUsId) {
+        console.warn('❌ Не удалось получить c.us ID');
+        return;
+      }
+
+      realChatId = realCUsId;
+    } else {
+      realChatId = parsedAuthor.id;
+    }
+
+    // === Отправка медиа ===
+    if (media?.filePath && media?.mimeType) {
+      try {
+        const buffer = fs.readFileSync(media.filePath);
         const base64 = buffer.toString('base64');
         const mediaToSend = new MessageMedia(media.mimeType, base64);
+
         await client.sendMessage(realChatId, mediaToSend, {
-          caption: media.caption || text
+          caption: media.caption || text,
         });
+
         console.log(`📤 Медиа отправлено на ${realChatId}`);
-      } else {
-        await client.sendMessage(realChatId, text);
-        console.log(`📤 Текст отправлен на ${realChatId}`);
+
+        // Удалить файл после успешной отправки
+        fs.unlink(media.filePath, (err) => {
+          if (err) {
+            console.warn('⚠️ Ошибка удаления файла:', err.message);
+          } else {
+            console.log('🗑️ Удалён временный файл:', media.filePath);
+          }
+        });
+
+      } catch (err) {
+        console.error('❌ Ошибка при отправке медиа:', err.message);
+        // 👉 Здесь файл не удаляется, так как не был успешно использован
       }
-      
-  
-    } catch (err) {
-      console.error('❌ Ошибка в quick-reply:', err.stack || err.message);
+    } else {
+      await client.sendMessage(realChatId, text);
+      console.log(`📤 Текст отправлен на ${realChatId}`);
     }
-  });
+
+  } catch (err) {
+    console.error('❌ Ошибка в quick-reply:', err.stack || err.message);
+  }
+});
+
   
   
   socket.on("load-chat-by-lid", async ({ chatId, lid, sendUserText }) => {
