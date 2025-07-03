@@ -130,28 +130,46 @@ app.get('/api/check-auth', (req, res) => {
   res.json({ authenticated: !!req.session.userId });
 });
 const multer = require('multer');
-const upload = multer({ dest: 'uploads/' }); // или memoryStorage()
 
+const uploadDir = path.resolve(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+  console.log('📂 Папка uploads создана');
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    console.log('📁 Сохраняем в:', uploadDir);
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    console.log('📎 Сохраняем файл с именем:', file.originalname);
+    const uniqueName = Date.now() + '-' + file.originalname.replace(/\s+/g, '_');
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({ storage }); // ✅ ЕДИНСТВЕННЫЙ вызов multer
+
+// Использование:
 app.post('/api/upload-media', upload.single('file'), (req, res) => {
-  console.log('📥 Запрос на загрузку медиа получен');
-
   if (!req.file) {
-    console.warn('❌ Файл не был загружен');
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  const fileInfo = {
-    filename: req.file.filename,
-    path: req.file.path,
-    mimetype: req.file.mimetype,
-    originalname: req.file.originalname,
-  };
+  console.log('➡️ Загруженный файл:', req.file);
 
-  console.log('✅ Файл успешно загружен:');
-  console.log(fileInfo);
-
-  res.json({ success: true, file: fileInfo });
+  res.json({
+    success: true,
+    file: {
+      originalname: req.file.originalname,
+      filename: req.file.filename,
+      path: req.file.path,
+      mimetype: req.file.mimetype
+    }
+  });
 });
+
 // 📋 Получить всех пользователей
 app.get('/api/users', isAuthenticated, async (req, res) => {
   const users = await User.findAll({ attributes: ['id', 'login'] });
