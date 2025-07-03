@@ -133,8 +133,13 @@ const multer = require('multer');
 const upload = multer({ dest: 'uploads/' }); // или memoryStorage()
 
 app.post('/api/upload-media', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  
+  console.log('📥 Запрос на загрузку медиа получен');
+
+  if (!req.file) {
+    console.warn('❌ Файл не был загружен');
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
   const fileInfo = {
     filename: req.file.filename,
     path: req.file.path,
@@ -142,9 +147,11 @@ app.post('/api/upload-media', upload.single('file'), (req, res) => {
     originalname: req.file.originalname,
   };
 
+  console.log('✅ Файл успешно загружен:');
+  console.log(fileInfo);
+
   res.json({ success: true, file: fileInfo });
 });
-
 // 📋 Получить всех пользователей
 app.get('/api/users', isAuthenticated, async (req, res) => {
   const users = await User.findAll({ attributes: ['id', 'login'] });
