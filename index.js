@@ -13,6 +13,8 @@ const fs = require('fs');
 const path = require('path');
 const app = express();
 const cors = require('cors');
+const cron = require('node-cron');
+
 app.use(cors({
   origin: 'https://wa-tg.netlify.app',
   credentials: true
@@ -205,6 +207,36 @@ app.get('/api/me', isAuthenticated, async (req, res) => {
   res.json({
     login: user.login,
     whatsappUserId: user.whatsappUserId
+  });
+});
+// 🕕 Удаление старых файлов из папки uploads каждый день в 6 утра
+cron.schedule('0 6 * * *', () => {
+  const uploadDir = path.resolve(__dirname, 'uploads');
+  const cutoffTime = Date.now() - 24 * 60 * 60 * 1000; // 24 часа назад
+
+  fs.readdir(uploadDir, (err, files) => {
+    if (err) {
+      return console.error('❌ Ошибка при чтении папки uploads:', err.message);
+    }
+
+    files.forEach(file => {
+      const filePath = path.join(uploadDir, file);
+      fs.stat(filePath, (err, stats) => {
+        if (err) {
+          return console.warn('⚠️ Не удалось получить инфо о файле:', file, err.message);
+        }
+
+        if (stats.mtimeMs < cutoffTime) {
+          fs.unlink(filePath, err => {
+            if (err) {
+              console.warn('⚠️ Не удалось удалить файл:', filePath, err.message);
+            } else {
+              console.log('🗑️ Удалён старый файл:', filePath);
+            }
+          });
+        }
+      });
+    });
   });
 });
 
@@ -536,14 +568,6 @@ io.on('connection', (socket) => {
           });
       
           console.log(`📤 Медиа отправлено на ${realChatId}`);
-      
-          fs.unlink(media.filePath, (err) => {
-            if (err) {
-              console.warn('⚠️ Не удалось удалить файл:', err.message);
-            } else {
-              console.log('🗑️ Временный файл удалён:', media.filePath);
-            }
-          });
       
         } catch (err) {
           console.error('❌ Ошибка при отправке медиа:', err.message);
