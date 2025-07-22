@@ -151,7 +151,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage }); // ✅ ЕДИНСТВЕННЫЙ вызов multer
+const upload = multer({ storage }); 
 
 // Использование:
 app.post('/api/upload-media', upload.single('file'), (req, res) => {
@@ -391,7 +391,7 @@ io.on('connection', (socket) => {
               io.to(socketId).emit('session-disconnected', { userId: clientKey });
             }
           }
-        }, 1000); // ⏱ задержка 1 секунда
+        }, 5000); // ⏱ задержка 1 секунда
     
       } catch (err) {
         console.error(`[❌] Ошибка при завершении клиента: ${err.message}`);
@@ -454,7 +454,7 @@ io.on('connection', (socket) => {
   
       let messages = [];
       try {
-        messages = await chat.fetchMessages({ limit: 250 });
+        messages = await chat.fetchMessages({ limit: 450 });
       } catch (e) {
         console.error(`[❌] fetchMessages failed for ${chatId}:`, e.message);
         continue;
@@ -853,7 +853,7 @@ io.on('connection', (socket) => {
                   io.to(socketId).emit('session-disconnected', { userId: clientKey });
                 }
               }
-            }, 1000); // ⏱ задержка 1 секунда
+            }, 5000); // ⏱ задержка 1 секунда
         
           } catch (err) {
             console.error(`[❌] Ошибка при завершении клиента: ${err.message}`);
