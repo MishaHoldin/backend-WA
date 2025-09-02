@@ -16,7 +16,7 @@ const cors = require('cors');
 const cron = require('node-cron');
 
 app.use(cors({
-  origin: 'https://wa-tg.netlify.app',
+  origin: 'https://dbcatcher.com',
   credentials: true
 }));
 
@@ -42,7 +42,7 @@ puppeteer.use(StealthPlugin());
 
 const io = new Server(server, {
   cors: {
-    origin: 'https://wa-tg.netlify.app',
+    origin: 'https://dbcatcher.com',
     methods: ['GET', 'POST'],
     credentials: true
   }
