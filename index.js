@@ -173,13 +173,13 @@ app.post('/api/upload-media', upload.single('file'), (req, res) => {
 });
 
 // 📋 Получить всех пользователей
-app.get('/api/users', isAuthenticated, async (req, res) => {
+app.get('/api/users', async (req, res) => {
   const users = await User.findAll({ attributes: ['id', 'login'] });
   res.json(users);
 });
 
 // ➕ Создать нового пользователя
-app.post('/api/users', isAuthenticated, async (req, res) => {
+app.post('/api/users', async (req, res) => {
   const { login, password } = req.body;
   const hash = await bcrypt.hash(password, 10);
   const user = await User.create({ login, password: hash });
@@ -187,7 +187,7 @@ app.post('/api/users', isAuthenticated, async (req, res) => {
 });
 
 // ✏️ Изменить пароль
-app.put('/api/users/:id', isAuthenticated, async (req, res) => {
+app.put('/api/users/:id', async (req, res) => {
   const { password } = req.body;
   const hash = await bcrypt.hash(password, 10);
   await User.update({ password: hash }, { where: { id: req.params.id } });
@@ -195,7 +195,7 @@ app.put('/api/users/:id', isAuthenticated, async (req, res) => {
 });
 
 // 🗑 Удалить пользователя
-app.delete('/api/users/:id', isAuthenticated, async (req, res) => {
+app.delete('/api/users/:id', async (req, res) => {
   await User.destroy({ where: { id: req.params.id } });
   res.json({ success: true });
 });
